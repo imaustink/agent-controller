@@ -124,8 +124,22 @@ func gatesRepository(providers []string) bool {
 //     sender there is nobody whose access could have been checked, so the
 //     turn is refused. That is exactly the shape of a chat turn that lost
 //     its identity on the way here.
-func (s *Service) gateRepository(ctx context.Context, req Request, userToken string) (string, error) {
+//
+// An agent-mode launch (docs/adr/0049) acts as the agent, not the caller, so
+// nobody's access is checked: the operator chose to let any caller who can see
+// the agent direct the App, and the launch audit record is the accountability.
+// A named repository still scopes the App token the run mints.
+func (s *Service) gateRepository(ctx context.Context, req Request, mode launchMode, userToken string) (string, error) {
 	repo := req.TargetRepository
+	if mode.requested == ModeAgent {
+		if repo == "" {
+			return "", nil
+		}
+		if _, _, ok := ParseRepository(repo); !ok {
+			return fmt.Sprintf("`%s` isn't a GitHub repository I can work in. Name it as `owner/repo`.", repo), nil
+		}
+		return "", nil
+	}
 	if repo == "" {
 		return fmt.Sprintf("Which GitHub repository should %s work in? Send your request again naming it as `owner/repo`.", req.AgentID), nil
 	}

@@ -196,6 +196,15 @@ type Request struct {
 	// 0048). It withholds the run's write-capable credential; see
 	// suppressWriteCredentials. It can only restrict.
 	ReadOnly bool `json:"readOnly,omitempty"`
+
+	// DefaultIdentity / AllowedIdentities are the Agent's identity mode
+	// declarations, and IdentityOverride the matched EventTrigger's
+	// target.identity (docs/adr/0049). See ResolveMode. The override is
+	// operator config carried in a signed dispatch assertion, never request
+	// text: unlike ReadOnly it can widen what a run reaches.
+	DefaultIdentity   string   `json:"defaultIdentity,omitempty"`
+	AllowedIdentities []string `json:"allowedIdentities,omitempty"`
+	IdentityOverride  string   `json:"identityOverride,omitempty"`
 }
 
 // suppressWriteCredentials removes, from a read-only run's credential set,
@@ -225,9 +234,12 @@ func suppressWriteCredentials(req Request, credentials map[string]string) {
 	if !req.ReadOnly {
 		return
 	}
-	if _, ok := credentials[ProviderEnvVar[identitylink.ProviderGitHub]]; ok {
-		delete(credentials, ProviderEnvVar[identitylink.ProviderGitHub])
-		log.Printf("[authorization] read-only run for %s: withholding %s", req.AgentID, ProviderEnvVar[identitylink.ProviderGitHub])
+	for provider := range WriteCapableProviders {
+		envVar := ProviderEnvVar[provider]
+		if _, ok := credentials[envVar]; ok {
+			delete(credentials, envVar)
+			log.Printf("[authorization] read-only run for %s: withholding %s", req.AgentID, envVar)
+		}
 	}
 }
 
@@ -319,6 +331,23 @@ type Verdict struct {
 	// own, so Kubernetes reclaims them with it rather than accumulating one
 	// per launch forever.
 	OwnedSecretNames []string `json:"ownedSecretNames,omitempty"`
+
+	// IdentityMode is the mode the run was actually given: it describes the
+	// credentials in SecretName, so a read-only run of a hybrid agent, whose
+	// caller token was withheld, is "agent". It becomes
+	// AgentRun.spec.identityMode / AGENT_IDENTITY_MODE (docs/adr/0049).
+	IdentityMode IdentityMode `json:"identityMode,omitempty"`
+	// RequestedIdentityMode / IdentityModeSource are what was asked for and
+	// by whom, before read-only or a shared caller narrowed it. Set on every
+	// verdict that got as far as resolving a mode, for the audit record.
+	RequestedIdentityMode IdentityMode `json:"requestedIdentityMode,omitempty"`
+	IdentityModeSource    ModeSource   `json:"identityModeSource,omitempty"`
+	// Credentials says, per declared provider, whose credential the run reads
+	// and writes with. Names only.
+	Credentials []LaunchCredential `json:"credentials,omitempty"`
+	// DecisionID names this decision in the audit trail. Set by the activity
+	// that ran it, never by this package.
+	DecisionID string `json:"decisionId,omitempty"`
 
 	// --- link-required ---
 
@@ -428,10 +457,104 @@ type pendingEntry struct {
 // first gap ended the turn, which made CRD provider order load-bearing — a
 // GitHub OAuth outage blocked Claude authorization entirely.
 func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
-	if len(req.IdentityProviders) == 0 {
+	mode, refusal, err := s.decideMode(req)
+	if err != nil {
+		v, verr := s.misconfigured(req, "", err.Error())
+		return mode.annotate(v), verr
+	}
+	if refusal != "" {
+		logVerdict(KindRefused, req.AgentID, map[string]any{"identityMode": mode.requested, "reason": "no caller credential"})
+		return mode.annotate(Verdict{Kind: KindRefused, Message: refusal}), nil
+	}
+	v, err := s.authorize(ctx, req, mode)
+	return mode.annotate(v), err
+}
+
+// launchMode is one launch's identity mode as the pre-flight works it out:
+// what was requested, and what the run is actually given.
+type launchMode struct {
+	requested IdentityMode
+	source    ModeSource
+	run       IdentityMode
+	// declared is the Agent's full provider list, kept for the audit record;
+	// the plan only ever sees the providers the run mode resolves.
+	declared []string
+	readOnly bool
+}
+
+// annotate stamps the mode onto a verdict. The run mode and per-provider
+// credential record only mean something for a launch that is going ahead.
+func (m launchMode) annotate(v Verdict) Verdict {
+	if m.requested == "" {
+		return v
+	}
+	v.RequestedIdentityMode = m.requested
+	v.IdentityModeSource = m.source
+	if v.Kind == KindAuthorized {
+		// authorize may have narrowed the run mode further (read-only), so
+		// the verdict's own value wins over the one decided up front.
+		if v.IdentityMode == "" {
+			v.IdentityMode = m.run
+		}
+		v.Credentials = launchCredentials(m.declared, v.IdentityMode, m.readOnly)
+	}
+	return v
+}
+
+// decideMode resolves the requested identity mode and the mode this caller can
+// actually be given. A non-empty refusal is the user-facing text for a launch
+// that asked to act as a caller it has no credential for.
+//
+// A shared subject (a webhook relay's service identity, a cron tick) is no one
+// person, so it holds no caller credential to act as. What happens then turns
+// on whether anyone ASKED for the caller's identity:
+//   - inferred: the pre-0049 behaviour, which already ran such a turn as the
+//     agent (the github step was skipped and reads used the App token scoped
+//     to the sender-verified repository). Kept exactly, narrowed to agent.
+//   - explicit (the Agent's defaultIdentity or the trigger's override): an
+//     operator said this run acts as the person who asked. Quietly running it
+//     as the agent instead would hand it the App's wider reach, so it is
+//     refused.
+func (s *Service) decideMode(req Request) (launchMode, string, error) {
+	d, err := ResolveMode(req.IdentityOverride, req.DefaultIdentity, req.AllowedIdentities, req.IdentityProviders)
+	m := launchMode{requested: d.Requested, source: d.Source, run: d.Requested, declared: req.IdentityProviders, readOnly: req.ReadOnly}
+	if err != nil {
+		return m, "", err
+	}
+	if m.run.usesCaller() && !req.Identity.PerUser {
+		if d.Source == SourceInferred {
+			m.run = ModeAgent
+		} else {
+			return m, fmt.Sprintf("%s is set to act as the person who asked, and this request doesn't come from one person "+
+				"whose linked account I can use, so I didn't start it.", req.AgentID), nil
+		}
+	}
+	return m, "", nil
+}
+
+// authorize is the provider pre-flight under an already-decided mode.
+func (s *Service) authorize(ctx context.Context, req Request, mode launchMode) (Verdict, error) {
+	declared := req.IdentityProviders
+	// Every DECLARED provider must be one this engine supports, whether or
+	// not this mode resolves it: an Agent naming a provider nothing can
+	// satisfy is misconfigured in every mode, and agent mode filtering it out
+	// first must not turn that into a silent launch.
+	for _, p := range declared {
+		if _, ok := ProviderEnvVar[p]; !ok {
+			return s.misconfigured(req, p, fmt.Sprintf("unsupported identity provider %q", p))
+		}
+	}
+	if mode.run == ModeAgent {
+		// The agent acts as itself on every resource provider, so none is
+		// resolved for the caller — not even a declared one, which is there
+		// for the modes that do.
+		req.IdentityProviders = runtimeOnly(declared)
+	}
+
+	if len(req.IdentityProviders) == 0 && !gatesRepository(declared) {
 		return Verdict{Kind: KindAuthorized, Principal: s.principalOf(req)}, nil
 	}
-	if s.deps.Links == nil {
+	if s.deps.Links == nil && len(req.IdentityProviders) > 0 {
 		return s.misconfigured(req, "", "no identity-link gateway is configured")
 	}
 
@@ -446,7 +569,15 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 	// GitHub App credentials.
 	var actorLoginFromLoop string
 
-	plan, principal, principalLogin := s.planProviders(ctx, req, s.principalOf(req))
+	// An EXPLICIT agent-mode launch never asks a chat caller to link GitHub:
+	// the run acts as the App, and the caller is already identified by their
+	// chat login (docs/adr/0049 §3). An existing GitHub link still upgrades
+	// the principal, so their Claude credentials resolve exactly as before;
+	// only the prompt for a missing one is skipped, keeping those credentials
+	// on the raw subject. An inferred agent mode keeps the pre-0049 prompt
+	// (ADR 0031), since nobody opted out of it.
+	explicitAgent := mode.requested == ModeAgent && mode.source != SourceInferred
+	plan, principal, principalLogin := s.planProviders(ctx, req, s.principalOf(req), !explicitAgent)
 
 	// One Connections-page link for the whole turn (agent-controller ADR
 	// 0046). When the page stands in for the providers' own flows, a missing
@@ -707,8 +838,8 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 		return v, nil
 	}
 
-	if gatesRepository(req.IdentityProviders) {
-		refusal, err := s.gateRepository(ctx, req, credentials[ProviderEnvVar[identitylink.ProviderGitHub]])
+	if gatesRepository(declared) {
+		refusal, err := s.gateRepository(ctx, req, mode, credentials[ProviderEnvVar[identitylink.ProviderGitHub]])
 		if err != nil {
 			return Verdict{}, fmt.Errorf("repository read check: %w", err)
 		}
@@ -716,19 +847,30 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 			logVerdict(KindRefused, req.AgentID, map[string]any{"targetRepository": req.TargetRepository})
 			return Verdict{Kind: KindRefused, Message: refusal}, nil
 		}
-		credentials[TargetRepositoryEnv] = req.TargetRepository
+		if req.TargetRepository != "" {
+			credentials[TargetRepositoryEnv] = req.TargetRepository
+		}
 	}
 
 	// After the read gate, which needs the caller's token to check access,
 	// and before anything is persisted.
 	suppressWriteCredentials(req, credentials)
+	if req.ReadOnly && mode.run.usesCaller() {
+		// The caller's token was the read credential and it is now withheld,
+		// so the run reads with the agent's (read-only) credential: say so,
+		// or an agent told "hybrid" would go looking for a token it lacks.
+		mode.run = ModeAgent
+	}
 
 	actorLogin := firstNonEmpty(actorLoginFromLoop, principalLogin, s.resolveActorLogin(ctx, req))
 	if actorLogin != "" {
 		credentials[ActorLoginEnv] = actorLogin
 	}
 
-	verdict := Verdict{Kind: KindAuthorized, ActorLogin: actorLogin, Principal: principal, OwnedSecretNames: ownedSecretNames}
+	verdict := Verdict{
+		Kind: KindAuthorized, ActorLogin: actorLogin, Principal: principal, OwnedSecretNames: ownedSecretNames,
+		IdentityMode: mode.run,
+	}
 	if len(credentials) > 0 {
 		if s.deps.Secret == nil {
 			return s.misconfigured(req, "", "resolved credentials but no secret writer is configured")
@@ -759,13 +901,25 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 		// see which repository a launch was gated on, which is the one thing
 		// in the pre-flight a model chose (for a chat turn).
 		"targetRepository": func() any {
-			if req.TargetRepository == "" || !gatesRepository(req.IdentityProviders) {
+			if req.TargetRepository == "" || !gatesRepository(declared) {
 				return nil
 			}
 			return req.TargetRepository
 		}(),
+		"identityMode": mode.run,
 	})
 	return verdict, nil
+}
+
+// runtimeOnly keeps the providers identity mode does not apply to.
+func runtimeOnly(providers []string) []string {
+	var out []string
+	for _, p := range providers {
+		if RuntimeProviders[p] {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // ResolveLinked is the read-only entry point: it reports whether every
@@ -845,7 +999,7 @@ func (s *Service) ResolveLinked(ctx context.Context, req Request) (Verdict, erro
 // establishing step FIRST so CRD provider order stays irrelevant: a
 // [claude, github] Agent must not key its claude credential before the login
 // is known.
-func (s *Service) planProviders(ctx context.Context, req Request, principal string) ([]providerStep, string, string) {
+func (s *Service) planProviders(ctx context.Context, req Request, principal string, offerPrincipalLink bool) ([]providerStep, string, string) {
 	plan := make([]providerStep, 0, len(req.IdentityProviders)+1)
 	needsPrincipal := false
 	for _, p := range req.IdentityProviders {
@@ -876,6 +1030,9 @@ func (s *Service) planProviders(ctx context.Context, req Request, principal stri
 	}
 	if login != "" {
 		return plan, CanonicalPrincipal(login), login
+	}
+	if !offerPrincipalLink {
+		return plan, principal, ""
 	}
 
 	return append([]providerStep{{name: PrincipalProvider, principalOnly: true}}, plan...), principal, ""

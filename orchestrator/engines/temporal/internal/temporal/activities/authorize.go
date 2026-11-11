@@ -3,6 +3,9 @@ package activities
 import (
 	"context"
 
+	"go.temporal.io/sdk/activity"
+
+	"github.com/aktisai/orchestrator/engines/temporal/internal/audit"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/authz"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
 )
@@ -35,6 +38,16 @@ type AuthorizeInput struct {
 	TargetRepository string `json:"targetRepository,omitempty"`
 	// ReadOnly withholds write-capable credentials; see authz.Request.ReadOnly.
 	ReadOnly bool `json:"readOnly,omitempty"`
+
+	// DefaultIdentity / AllowedIdentities are the Agent's, IdentityOverride
+	// the matched trigger's (docs/adr/0049); see authz.ResolveMode.
+	DefaultIdentity   string   `json:"defaultIdentity,omitempty"`
+	AllowedIdentities []string `json:"allowedIdentities,omitempty"`
+	IdentityOverride  string   `json:"identityOverride,omitempty"`
+
+	// TriggerName is the EventTrigger that produced the turn. Audit only: it
+	// decides nothing here.
+	TriggerName string `json:"triggerName,omitempty"`
 }
 
 // AuthorizeActivities is the workflow-facing side of the pre-flight.
@@ -66,12 +79,63 @@ func (in AuthorizeInput) request() authz.Request {
 		Pending:           in.Pending,
 		TargetRepository:  in.TargetRepository,
 		ReadOnly:          in.ReadOnly,
+		DefaultIdentity:   in.DefaultIdentity,
+		AllowedIdentities: in.AllowedIdentities,
+		IdentityOverride:  in.IdentityOverride,
 	}
 }
 
-// Authorize runs the full pre-flight, which may start link flows.
+// Authorize runs the full pre-flight, which may start link flows, and writes
+// the decision's audit record (docs/adr/0049 §3) before returning it: every
+// outcome, including a refusal, is on the record before anything starts.
 func (a *AuthorizeActivities) Authorize(ctx context.Context, in AuthorizeInput) (authz.Verdict, error) {
-	return a.Service.Authorize(ctx, in.request())
+	v, err := a.Service.Authorize(ctx, in.request())
+	if err != nil {
+		// Retried by Temporal; the attempt that settles writes the record.
+		return v, err
+	}
+	v.DecisionID = decisionID(ctx)
+	info := activity.GetInfo(ctx)
+	audit.Emit(audit.Record{
+		Kind:         audit.KindAuthorization,
+		Agent:        in.AgentID,
+		Outcome:      string(v.Kind),
+		Conversation: info.WorkflowExecution.ID,
+		Launch:       LaunchRecord(in, v),
+	})
+	return v, nil
+}
+
+// decisionID names one pre-flight decision. Stable across retries of the same
+// activity (the attempt number is not part of it), so the record written by
+// the attempt that settled and the AgentRun it launched always agree.
+func decisionID(ctx context.Context) string {
+	info := activity.GetInfo(ctx)
+	return info.WorkflowExecution.RunID + "/" + info.ActivityID
+}
+
+// LaunchRecord is the audit view of a pre-flight decision. Pure, so the
+// workflow can rebuild exactly what the activity recorded and carry it to the
+// launcher without another activity.
+func LaunchRecord(in AuthorizeInput, v authz.Verdict) audit.Launch {
+	l := audit.Launch{
+		DecisionID:            v.DecisionID,
+		EntryPoint:            audit.EntryPoint(in.Caller.PerUser, in.TriggerName, in.SenderLogin),
+		LaunchedBy:            in.Caller.Subject,
+		Trigger:               in.TriggerName,
+		RequestedIdentityMode: string(v.RequestedIdentityMode),
+		IdentityMode:          string(v.IdentityMode),
+		IdentityModeSource:    string(v.IdentityModeSource),
+		TargetRepository:      in.TargetRepository,
+		ReadOnly:              in.ReadOnly,
+	}
+	if in.SenderLogin != "" {
+		l.Sender = &audit.Sender{Provider: "github", Login: in.SenderLogin}
+	}
+	for _, c := range v.Credentials {
+		l.Credentials = append(l.Credentials, audit.Credential{Provider: c.Provider, Read: c.Read, Write: c.Write})
+	}
+	return l
 }
 
 // ResolveLinked is the read-only variant for a paused tool call, which has no

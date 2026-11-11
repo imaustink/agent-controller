@@ -50,7 +50,7 @@ func delegateToAgent(ctx workflow.Context, actx workflow.Context, state *Convers
 	// Authorization pre-flight, before anything is launched (upstream ADR
 	// 0030). Plain control flow: no model call reaches this decision, and
 	// nothing downstream can skip it.
-	verdict, err := authorizeAgent(ctx, actx, in, agent, pending)
+	verdict, launch, err := authorizeAgent(ctx, actx, in, agent, pending)
 	if err != nil {
 		return "", *meta, fmt.Errorf("authorize %s: %w", agent.ID, err)
 	}
@@ -118,6 +118,7 @@ func delegateToAgent(ctx workflow.Context, actx workflow.Context, state *Convers
 		Credentials: credentials{SecretName: verdict.SecretName, EnvVars: verdict.EnvVarNames},
 		ReadOnly:    in.ReadOnly,
 		Params:      in.Params,
+		Launch:      launch,
 	})
 	// Wait for the start (not completion): the update handler returns while
 	// the child keeps running under this conversation. ParentClosePolicy

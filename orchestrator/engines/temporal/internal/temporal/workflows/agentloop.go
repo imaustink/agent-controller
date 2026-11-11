@@ -41,6 +41,10 @@ const (
 	// A turn that would end on a raw knowledge-base result asks the planner once
 	// more, respond-only, instead of composing that result verbatim.
 	versionKBSynthesizeFinish = "kb-synthesize-finish"
+	// Every agent launch runs the Authorize activity, even for an agent that
+	// declares no identity providers, so its identity mode is resolved and
+	// its decision is on the audit record (docs/adr/0049).
+	versionIdentityModePreflight = "identity-mode-preflight"
 )
 
 // TurnMeta reports what the agent loop did, for TurnResult/debugging.

@@ -12,6 +12,7 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
 	"github.com/aktisai/orchestrator/engines/temporal/internal/agentrun"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/audit"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/toolrun"
 )
 
@@ -48,5 +49,48 @@ func TestLaunchCarriesReadOnlyAndParams(t *testing.T) {
 				require.Equal(t, tc.params, params)
 			}
 		})
+	}
+}
+
+// The pre-flight's decision becomes spec.identityMode (AGENT_IDENTITY_MODE)
+// and the immutable spec.launch record (docs/adr/0049). A launch no decision
+// covered writes neither, byte-identical to before.
+func TestLaunchCarriesIdentityModeAndLaunchRecord(t *testing.T) {
+	for _, withLaunch := range []bool{true, false} {
+		client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+			map[schema.GroupVersionResource]string{agentrun.GVR: "AgentRunList"})
+		launcher := agentrun.NewK8sLauncher(client, "ns", toolrun.SecretRef{Name: "cb", Key: "k"})
+		spec := agentrun.LaunchSpec{
+			Name: "agentrun-swe-1", AgentRef: "swe", Goal: "fix the bug",
+			CallbackURL: "http://gw/callback/w/agentrun-swe-1",
+		}
+		if withLaunch {
+			spec.Launch = audit.Launch{
+				DecisionID: "run-1/7", EntryPoint: audit.EntryWebhook, LaunchedBy: "oidc:integration-gateway",
+				Sender: &audit.Sender{Provider: "github", Login: "alice"}, Trigger: "ai-triage",
+				RequestedIdentityMode: "hybrid", IdentityMode: "agent", IdentityModeSource: "inferred",
+				Credentials:      []audit.Credential{{Provider: "github", Read: "agent", Write: "agent"}},
+				TargetRepository: "acme/widgets",
+			}
+		}
+		require.NoError(t, launcher.Launch(context.Background(), spec))
+
+		obj, err := client.Resource(agentrun.GVR).Namespace("ns").Get(context.Background(), "agentrun-swe-1", metav1.GetOptions{})
+		require.NoError(t, err)
+		mode, found, _ := unstructured.NestedString(obj.Object, "spec", "identityMode")
+		launch, launchFound, _ := unstructured.NestedMap(obj.Object, "spec", "launch")
+		if !withLaunch {
+			require.False(t, found)
+			require.False(t, launchFound)
+			continue
+		}
+		require.Equal(t, "agent", mode)
+		require.Equal(t, map[string]any{
+			"decisionId": "run-1/7", "entryPoint": "webhook", "launchedBy": "oidc:integration-gateway",
+			"sender": map[string]any{"provider": "github", "login": "alice"}, "trigger": "ai-triage",
+			"requestedIdentityMode": "hybrid", "identityModeSource": "inferred",
+			"credentials":      []any{map[string]any{"provider": "github", "read": "agent", "write": "agent"}},
+			"targetRepository": "acme/widgets",
+		}, launch)
 	}
 }

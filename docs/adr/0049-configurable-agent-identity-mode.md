@@ -54,23 +54,36 @@ spec:
 | `delegated` | caller's token | caller's token | yes | caller's token |
 | `hybrid` | caller's token | agent credential, repo-scoped | yes | caller's token |
 
-- **Mode applies to *resource* providers only.** `IdentityProvider` gains
-  `spec.kind: resource | runtime` (default `resource`). `claude` and
-  `claude-remote` become `runtime`: they are the model credential, not access to
-  a system the agent acts on, and keep resolving as today in every mode.
-  `WRITE_CAPABLE_PROVIDERS` / `CrossEntryPointProviders` stop being hardcoded
-  sets. A new `spec.writeCapable` drives `readOnly` suppression.
+- **Mode applies to *resource* providers only.** `claude` and `claude-remote`
+  are *runtime* providers: the model credential, not access to a system the
+  agent acts on. They keep resolving as today in every mode. Everything else
+  (`github`) is a resource provider. The classification is a fixed set in
+  `authz` (`RuntimeProviders`, `WriteCapableProviders`), not
+  `IdentityProvider` CR data, because the Temporal engine doesn't watch
+  `IdentityProvider` CRs at all: its provider → env var table is fixed too.
+  Moving both into the CRD is a follow-up for when the engine watches it.
 - **`identityProviders` keeps its meaning:** the providers this agent *can* use
   on the caller's behalf. The mode decides whether they are resolved for a given
   run. An `agent`-mode run resolves no resource provider, even a declared one.
 - **Unset is backwards compatible:** `github` declared → `hybrid`, otherwise
   → `agent`. That is exactly what the Helm `identityLink.enabled` toggle
   produces today, since it sets `identityProviders` and
-  `GITHUB_IDENTITY_DELEGATION` together. A webhook validation warns when the
-  field is unset, so the inference can be removed in a later API version.
+  `GITHUB_IDENTITY_DELEGATION` together. The Helm charts therefore leave
+  `defaultIdentity` unset: setting it to `hybrid` explicitly would change
+  webhook behaviour (see "shared callers" below), where inference keeps it.
 - **`allowedIdentities`** defaults to all three. It lets an Agent author forbid
   a trigger from downgrading a `delegated` agent to `agent`, which would widen
   access to the App's full installation.
+- **Shared callers.** A webhook relay's service identity or a cron tick is no
+  one person, so it has no caller credential to act as.
+  - With an *inferred* mode, the pre-0049 behaviour is kept exactly: the run
+    is narrowed to `agent` and gated on the vouched-for sender.
+  - With an *explicit* `delegated`/`hybrid` (the Agent's default or the
+    trigger's override), the launch is refused rather than quietly run as
+    the App. §5–6 turn that refusal into a resolvable `403` once a sender can
+    resolve to a delegated subject.
+  - An explicit `agent` mode runs from a shared caller with no sender too
+    (e.g. a cron trigger), since the operator said it acts as itself.
 
 ### 2. The mode is decided once and plumbed, never inferred
 
@@ -97,14 +110,25 @@ presence:
   A missing `GITHUB_TOKEN` is a hard start-up failure, never a silent
   fallback to the App.
 
-`GITHUB_IDENTITY_DELEGATION` and `isDelegating()` are deleted. The duplicated
-`identityDelegation.ts` in `claude-code-swe-agent` and `opencode-swe-agent`
-moves into `framework/github-app-auth`, so the mode switch exists once.
+`GITHUB_IDENTITY_DELEGATION` is deleted. The duplicated `identityDelegation.ts`
+in `claude-code-swe-agent` and `opencode-swe-agent` moves into
+`framework/github-app-auth`, so the mode switch exists once.
 
-**`readOnly` composes and only restricts.** In `delegated`/`hybrid` it keeps
-the caller's read token and removes every write path. Today it drops
-`GITHUB_TOKEN` and reads with a `contents:read` App token, which is *broader*
-than the caller. In `agent` mode it is the current `contents:read` App token.
+**A run with no `AGENT_IDENTITY_MODE` still infers.** Only a launch the
+pre-flight decided carries a mode. A nested sub-agent, or the agent behind an
+agent-backed tool, has no `Authorize` decision of its own, and neither does
+anything launched by the LangGraph engine. Those runs fall back to the
+pre-0049 inference: a `GITHUB_TOKEN` plus App credentials → `hybrid`,
+otherwise `agent`. That is exactly what the deleted flag gated, since Helm
+always set it together with the `github` provider.
+
+**`readOnly` composes and only restricts.** It withholds the caller's
+`GITHUB_TOKEN` after the read gate has checked access with it. Leaving a
+user token in a read-only run would make "read-only" rest on the agent's
+command filter alone, because the token carries whatever write access the
+human has. A read-only `delegated`/`hybrid` run is therefore given `agent`
+mode: it reads with a `contents:read` App token, scoped to the checked
+repository. Its audit record keeps the requested mode alongside.
 
 ### 3. `agent` mode needs no provider link; the launching identity is audited
 
@@ -114,29 +138,46 @@ identified: Open WebUI forwards a signed per-user JWT, which resolves to
 authorizes, and it is what the audit trail records. The run acts as the App,
 but it is always attributable to the person who launched it.
 
-**Every launch writes one audit record from the pre-flight
-verdict:**
+**Every decision and every launch writes an audit record**, as one JSON line
+on the worker's stdout (`internal/audit`):
+
+- `agent-authorization`: written by the `Authorize` activity for **every**
+  decision (`authorized`, `link-required`, `refused`, `misconfigured`), before
+  anything starts. Each decision gets a `decisionId`, stable across activity
+  retries.
+- `agent-launch`: written when the AgentRun is created, joined to its decision
+  by `decisionId`.
+
+Every agent launch now runs `Authorize`, even for an agent with no identity
+providers (versioned with `GetVersion`, so in-flight conversations replay
+unchanged).
 
 ```json
 {
-  "kind": "agent-launch",
-  "agentRun": "claude-code-swe-agent-7f3k2", "agent": "claude-code-swe-agent",
-  "sessionId": "...", "time": "...",
-  "entryPoint": "chat",                    // chat | webhook | cron
+  "kind": "agent-launch", "outcome": "launched",
+  "agent": "claude-code-swe-agent", "agentRun": "claude-code-swe-agent-7f3k2",
+  "conversation": "<workflow id>", "time": "...",
+  "decisionId": "<run id>/<activity id>",
+  "entryPoint": "chat",                    // chat | webhook | event | api
   "launchedBy": "openwebui:8c1e...",       // the authenticated caller
-  "delegatedSubject": null,                // webhook: the subject the sender resolved to
-  "sender": null,                          // webhook: {provider, login, accountId}
-  "trigger": null,                         // webhook/cron: EventTrigger name
-  "identityMode": "agent",
+  "delegatedSubject": "...",               // webhook: the subject the sender resolved to (§5)
+  "sender": {"provider": "github", "login": "..."},   // webhook
+  "trigger": "...",                        // webhook/event: EventTrigger name
+  "requestedIdentityMode": "hybrid",
+  "identityMode": "agent",                 // what the run was actually given
   "identityModeSource": "default",         // default | trigger | inferred
-  "credentials": [{"provider": "github", "as": "app"}],   // never token material
+  "credentials": [{"provider": "github", "read": "agent", "write": "agent"}],   // never token material
   "readOnly": false,
   "targetRepository": "imaustink/agent-controller"
 }
 ```
 
-- It is emitted as a structured log line (`kind: agent-launch`). This line is
-  the durable record, because AgentRun CRs are garbage-collected.
+- This line is the durable record, because AgentRun CRs are
+  garbage-collected.
+- **An explicit `agent` mode never prompts a chat caller to link GitHub,** not
+  even for the ADR 0031 principal step. An existing link still upgrades the
+  principal, so Claude credentials resolve as before. An inferred `agent`
+  mode keeps the principal prompt, since nobody opted out of it.
 - It is mirrored onto the AgentRun as immutable `spec.launch`, so
   `kubectl get agentrun -o yaml` answers "who launched this, as what" while the
   run exists. The Temporal engine also has it in workflow history.
@@ -303,13 +344,12 @@ Temporal gateway's verdicts.
    on `main`.)*
 2. **API + plumbing, chat only.**
    - `defaultIdentity`, `allowedIdentities`, `AgentRun.spec.identityMode` /
-     `spec.launch`, `IdentityProvider.spec.kind`/`writeCapable`, then
-     `make manifests`.
-   - Bump the chart version, because Argo caches renders per version.
+     `spec.launch`, then `make manifests`. (The release workflow bumps chart
+     patch versions itself.)
    - Mode resolution in `authz.Authorize`, plus the audit record.
    - `AGENT_IDENTITY_MODE` and the shared `framework/github-app-auth` mode
      switch. Delete `GITHUB_IDENTITY_DELEGATION`.
-   - Helm maps `identityLink.enabled` → `defaultIdentity: hybrid`.
+   - Helm leaves `defaultIdentity` unset, so inference keeps today's behaviour.
    - The LangGraph freeze from the section below.
 3. **Trigger override.** `target.identity`, carried in the dispatch assertion
    and refused in the Temporal gateway body. Controller `Ready` validation

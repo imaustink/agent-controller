@@ -36,6 +36,8 @@ type agentSpec struct {
 	MaxIterations          int32    `json:"maxIterations,omitempty"`
 	IdentityProviders      []string `json:"identityProviders,omitempty"`
 	ToolRefs               []string `json:"toolRefs,omitempty"`
+	DefaultIdentity        string   `json:"defaultIdentity,omitempty"`
+	AllowedIdentities      []string `json:"allowedIdentities,omitempty"`
 }
 
 type envVarSpec struct {
@@ -224,6 +226,8 @@ func DecodeAgent(obj *unstructured.Unstructured) (AgentDescriptor, error) {
 		Model:                  spec.Model,
 		MaxIterations:          spec.MaxIterations,
 		IdentityProviders:      spec.IdentityProviders,
+		DefaultIdentity:        spec.DefaultIdentity,
+		AllowedIdentities:      spec.AllowedIdentities,
 		ToolRefs:               spec.ToolRefs,
 	}, nil
 }
