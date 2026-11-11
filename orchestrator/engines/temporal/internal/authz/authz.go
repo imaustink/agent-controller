@@ -141,6 +141,13 @@ type Identity struct {
 	// credentials. Absent the assertion this degrades to no sharing, never to
 	// the wrong principal.
 	PerUser bool `json:"perUser,omitempty"`
+
+	// DelegatedSubject is the subject a webhook sender's account is linked
+	// under, vouched for by integration-gateway (docs/adr/0049 §5). It lets a
+	// caller-mode run act as the SENDER on a shared subject: resource
+	// credentials are keyed by it. It never makes the caller PerUser, so
+	// nothing interactive (link flows, principal re-keying) runs under it.
+	DelegatedSubject string `json:"delegatedSubject,omitempty"`
 }
 
 // Request is everything the pre-flight depends on, named explicitly rather
@@ -205,6 +212,13 @@ type Request struct {
 	DefaultIdentity   string   `json:"defaultIdentity,omitempty"`
 	AllowedIdentities []string `json:"allowedIdentities,omitempty"`
 	IdentityOverride  string   `json:"identityOverride,omitempty"`
+
+	// SenderAccountID / SenderSubjectStatus are the rest of the gateway's
+	// sender claim (docs/adr/0049 §5): the immutable account id, and whether
+	// it resolved to a subject (linked | unlinked | ambiguous | unavailable).
+	// They decide which identity error a refusal reports.
+	SenderAccountID     string `json:"senderAccountId,omitempty"`
+	SenderSubjectStatus string `json:"senderSubjectStatus,omitempty"`
 }
 
 // suppressWriteCredentials removes, from a read-only run's credential set,
@@ -361,6 +375,12 @@ type Verdict struct {
 	// --- misconfigured ---
 
 	Error string `json:"error,omitempty"`
+
+	// --- refused, for an identity reason ---
+
+	// IdentityError is set when a caller-mode launch cannot act as its
+	// webhook sender (docs/adr/0049 §6). Message is its printable text.
+	IdentityError *IdentityError `json:"identityError,omitempty"`
 }
 
 // SecretWriter persists a run's resolved credentials and returns the object's
@@ -466,9 +486,9 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 		v, verr := s.misconfigured(req, "", err.Error())
 		return mode.annotate(v), verr
 	}
-	if refusal != "" {
+	if refusal != nil {
 		logVerdict(KindRefused, req.AgentID, map[string]any{"identityMode": mode.requested, "reason": "no caller credential"})
-		return mode.annotate(Verdict{Kind: KindRefused, Message: refusal}), nil
+		return mode.annotate(*refusal), nil
 	}
 	v, err := s.authorize(ctx, req, mode)
 	return mode.annotate(v), err
@@ -519,21 +539,31 @@ func (m launchMode) annotate(v Verdict) Verdict {
 //     operator said this run acts as the person who asked. Quietly running it
 //     as the agent instead would hand it the App's wider reach, so it is
 //     refused.
-func (s *Service) decideMode(req Request) (launchMode, string, error) {
+//
+// A webhook sender the gateway resolved to a linked subject (docs/adr/0049
+// §5) IS someone to act as: their DelegatedSubject's links are used. An
+// explicit caller mode whose sender did not resolve gets an IdentityError the
+// webhook consumer can act on (§6).
+func (s *Service) decideMode(req Request) (launchMode, *Verdict, error) {
 	d, err := ResolveMode(req.IdentityOverride, req.DefaultIdentity, req.AllowedIdentities, req.IdentityProviders)
 	m := launchMode{requested: d.Requested, source: d.Source, run: d.Requested, declared: req.IdentityProviders, readOnly: req.ReadOnly}
 	if err != nil {
-		return m, "", err
+		return m, nil, err
 	}
-	if m.run.usesCaller() && !req.Identity.PerUser {
+	actsAsSomeone := req.Identity.PerUser || req.Identity.DelegatedSubject != ""
+	if m.run.usesCaller() && !actsAsSomeone {
 		if d.Source == SourceInferred {
 			m.run = ModeAgent
-		} else {
-			return m, fmt.Sprintf("%s is set to act as the person who asked, and this request doesn't come from one person "+
-				"whose linked account I can use, so I didn't start it.", req.AgentID), nil
+			return m, nil, nil
 		}
+		if isWebhookSender(req) {
+			ie := s.identityError(req, m.requested, req.SenderSubjectStatus, callerResourceProviders(req.IdentityProviders))
+			return m, &Verdict{Kind: KindRefused, Message: ie.Message, IdentityError: ie}, nil
+		}
+		return m, &Verdict{Kind: KindRefused, Message: fmt.Sprintf("%s is set to act as the person who asked, and this request "+
+			"doesn't come from one person whose linked account I can use, so I didn't start it.", req.AgentID)}, nil
 	}
-	return m, "", nil
+	return m, nil, nil
 }
 
 // authorize is the provider pre-flight under an already-decided mode.
@@ -566,6 +596,9 @@ func (s *Service) authorize(ctx context.Context, req Request, mode launchMode) (
 	var ownedSecretNames []string
 	var pending []pendingEntry
 	var failedToStart []string
+	// delegatedMissing are a webhook sender's resource providers with no
+	// usable link under their delegated subject (docs/adr/0049 §6).
+	var delegatedMissing []string
 
 	// actorLoginFromLoop is the caller's login read off their resolved github
 	// link. Deliberately from the stored record rather than a /user call: the
@@ -645,7 +678,7 @@ func (s *Service) authorize(ctx context.Context, req Request, mode launchMode) (
 		// the shared-credential bug in its original form. Such a turn reads
 		// with the App token scoped to the repository its sender was
 		// verified on, and gateRepository insists that sender exists.
-		if step.name == identitylink.ProviderGitHub && !step.principalOnly && !req.Identity.PerUser {
+		if step.name == identitylink.ProviderGitHub && !step.principalOnly && !req.Identity.PerUser && req.Identity.DelegatedSubject == "" {
 			continue
 		}
 
@@ -658,11 +691,25 @@ func (s *Service) authorize(ctx context.Context, req Request, mode launchMode) (
 		if CrossEntryPointProviders[step.name] {
 			credentialSubject = principal
 		}
+		// A webhook sender's resource credentials are their own, read from
+		// the subject the gateway resolved them to (docs/adr/0049 §5).
+		delegated := !req.Identity.PerUser && req.Identity.DelegatedSubject != "" && !RuntimeProviders[step.name] && !step.principalOnly
+		if delegated {
+			credentialSubject = req.Identity.DelegatedSubject
+		}
 
 		token, err := s.deps.Links.Token(ctx, step.name, credentialSubject)
 		if err != nil {
 			log.Printf("[authorization] token lookup failed for %s@%s: %v", step.name, credentialSubject, err)
 			token = nil
+		}
+
+		if token == nil && delegated {
+			// Never prompt on a webhook sender's behalf: there is nobody here
+			// to complete a flow, and starting one under the sender's subject
+			// would be a link they never asked for. Reported to the consumer.
+			delegatedMissing = append(delegatedMissing, step.name)
+			continue
 		}
 
 		if token == nil {
@@ -821,6 +868,12 @@ func (s *Service) authorize(ctx context.Context, req Request, mode launchMode) (
 			}
 			settle(d.step, d.envVar, d.credentialSubject, token)
 		}
+	}
+
+	if len(delegatedMissing) > 0 {
+		ie := s.identityError(req, mode.requested, "unlinked", delegatedMissing)
+		logVerdict(KindRefused, req.AgentID, map[string]any{"identityError": ie.Code, "missing": delegatedMissing})
+		return Verdict{Kind: KindRefused, Message: ie.Message, IdentityError: ie}, nil
 	}
 
 	// One decision point for the whole provider set, reached only after every

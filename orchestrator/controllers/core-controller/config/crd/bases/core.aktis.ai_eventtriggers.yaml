@@ -85,6 +85,13 @@ spec:
                         description: issueNumber is the issue or pull request number.
                         minLength: 1
                         type: string
+                      onIdentityError:
+                        description: |-
+                          onIdentityError posts the printable message of an identity error (the
+                          sender must link an account first, docs/adr/0049 §6) as a comment.
+                          GitHub never reads a webhook's response body, so without this nobody
+                          would see why nothing ran. The webhook is answered 403 either way.
+                        type: boolean
                       removeLabel:
                         description: removeLabel is removed when the run ends, on
                           every outcome.

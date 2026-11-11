@@ -356,7 +356,7 @@ a cron source becomes a core-controller-owned `CronJob` that ticks
   - `webhook.verify` — `scheme` (`hmacSha256` | `slackV0` | `bearer`; there is no "none": unauthenticated is not a source), `header` (required for `hmacSha256`; `bearer` defaults to `authorization`), `prefix` (stripped before the hex compare), `secretRef` (`{name, key}`, same namespace).
   - `webhook.deliveryIdHeader` — becomes `envelope.id` (else a uuid).
   - `cron` — `schedule` (5-field), `timeZone`, `suspend`, `payload` (any JSON object, delivered as `envelope.body`).
-  - `sender` (webhook only) — `provider: github`, CEL `loginFrom` / `isBotFrom` / `repositoryFrom`, `dropBots` (default `true`). A login is only forwarded as the turn's principal after the provider verifies it; a source without `sender` runs as the gateway's service identity.
+  - `sender` (webhook only) — `provider: github`, CEL `loginFrom` / `isBotFrom` / `repositoryFrom` / `accountIdFrom` (the immutable account id, e.g. `body.sender.id`, resolved to the subject the sender linked under; [ADR 0049](adr/0049-configurable-agent-identity-mode.md) §5), `dropBots` (default `true`). A login is only forwarded as the turn's principal after the provider verifies it; a source without `sender` runs as the gateway's service identity.
 - **Status:** `Ready` condition; cron sources also `status.cronJobName` (`eventsource-<name>`). A cron source is `Ready=False` (`TickNotConfigured`) when core-controller has no `EVENT_TICK_URL`.
 - **Acted on by:** `eventsource_controller.go` (validates, owns the cron `CronJob`); `integration-gateway` serves and verifies webhooks from it.
 - **Sample:** `config/samples/core_v1alpha1_eventsource.yaml`.
@@ -402,7 +402,7 @@ fallback.
   - `params` — name → CEL, evaluated to typed values; rendered into every `{{name}}` template.
   - `sessionKey` — template for the turn's session id (else `event:<source>:<id>`).
   - `target` — **CEL:** exactly one of `orchestrator: {}` (ordinary conversational turn), `skillRef`, `agentRef`, `toolRef` (runs the Tool once with `params` as its input, skipping the planner); `promptTemplate` (required unless `toolRef`); `readOnly` — the deterministic write gate, carried onto every `AgentRun`/`ToolRun` the turn launches; `identity` (`agent` | `delegated` | `hybrid`) — identity-mode override for every agent the turn authorizes, must be in the target Agent's `allowedIdentities` (`IdentityNotAllowed` otherwise), invalid with `toolRef`, signed-dispatch only ([ADR 0049](adr/0049-configurable-agent-identity-mode.md)).
-  - `reply.github` — `repository`, `issueNumber`, `ack` (+ `sessionPage`), `result`, `removeLabel` (on every outcome, durably). `reply.http` — a **literal** `url` (never templated) + optional signing `secretRef`. Executed by `integration-gateway`.
+  - `reply.github` — `repository`, `issueNumber`, `ack` (+ `sessionPage`), `result`, `removeLabel` (on every outcome, durably), `onIdentityError` (post the printable message of an identity `403` as a comment; ADR 0049 §6). `reply.http` — a **literal** `url` (never templated) + optional signing `secretRef`. Executed by `integration-gateway`.
 - **Status:** `Ready` condition (CEL compiles, refs resolve).
 - **Acted on by:** `eventtrigger_controller.go` (compile + ref check); agent-orchestrator and the Temporal gateway match and dispatch.
 - **Sample:** `config/samples/core_v1alpha1_eventtrigger.yaml`; the shipped examples are bare manifests in `examples/event-triggers/` (not part of any chart).

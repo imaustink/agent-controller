@@ -2562,3 +2562,80 @@ describe("InvokeServer consumer-supplied tools (docs/adr/0035)", () => {
     await server.close();
   });
 });
+
+describe("InvokeServer accept-phase identity check (docs/adr/0049 §6)", () => {
+  const SECRET = "assertion-secret";
+  const agentTrigger: EventTriggerResource = {
+    metadata: { name: "triage-as-sender" },
+    spec: {
+      target: { agentRef: "swe", promptTemplate: "triage", identity: "delegated" },
+      reply: { github: { repository: "acme/widgets", issueNumber: "7", onIdentityError: true } },
+    },
+  };
+  const claims = { login: "alice", accountId: "583231", subjectStatus: "unlinked" as const };
+
+  async function post(graph: AgentGraphLike, trigger = agentTrigger): Promise<{ res: Response; server: InvokeServer }> {
+    const server = new InvokeServer(graph, undefined, undefined, await triggerRegistry([trigger]), undefined, SECRET);
+    const port = await listenOn(server);
+    const res = await fetch(`http://127.0.0.1:${port}/invoke`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer tok-1",
+        [SENDER_ASSERTION_HEADER]: mintSenderAssertion(SECRET, claims),
+      },
+      body: JSON.stringify({ event: envelope({ sender: { login: "alice" } }) }),
+    });
+    return { res, server };
+  }
+
+  const refusal = {
+    status: "failed" as const,
+    error: { code: "identity_link_required", message: "alice: link your GitHub account so swe can act as you: https://gw/x" },
+  };
+
+  it("answers 403 with the engine's identity error and the trigger's reply, and runs nothing", async () => {
+    const checkIdentity = vi.fn().mockResolvedValue(refusal);
+    const graph: AgentGraphLike = { invoke: vi.fn(), stream: vi.fn(), checkIdentity };
+    const { res, server } = await post(graph);
+
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: Record<string, unknown> };
+    expect(body.error.code).toBe("identity_link_required");
+    expect(body.error.trigger).toMatchObject({ name: "triage-as-sender", reply: { github: { onIdentityError: true } } });
+    expect(graph.invoke).not.toHaveBeenCalled();
+
+    // The check saw the turn as the engine would: forced agent, signed
+    // override, and the gateway's full sender claims.
+    expect(checkIdentity).toHaveBeenCalledWith(
+      expect.objectContaining({ forcedAgentId: "swe", identityOverride: "delegated", senderLogin: "alice", senderClaims: claims }),
+    );
+    await server.close();
+  });
+
+  it("accepts as before when the engine has no objection, carrying the claims into the run", async () => {
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "t", skillCandidates: [], result: "done" } as AgentState),
+      stream: vi.fn().mockResolvedValue(noStream()),
+      checkIdentity: vi.fn().mockResolvedValue(undefined),
+    };
+    const { res, server } = await post(graph);
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(graph.invoke).toHaveBeenCalledWith(expect.objectContaining({ senderClaims: claims }));
+    await server.close();
+  });
+
+  it("does not check a trigger that names no agent", async () => {
+    const checkIdentity = vi.fn().mockResolvedValue(refusal);
+    const graph: AgentGraphLike = {
+      invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "t", skillCandidates: [], result: "done" } as AgentState),
+      stream: vi.fn().mockResolvedValue(noStream()),
+      checkIdentity,
+    };
+    const { res, server } = await post(graph, catchAllTrigger);
+    expect(res.status).toBe(202);
+    expect(checkIdentity).not.toHaveBeenCalled();
+    await server.close();
+  });
+});

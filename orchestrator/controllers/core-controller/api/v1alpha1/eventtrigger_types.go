@@ -100,6 +100,13 @@ type GitHubReply struct {
 	// removeLabel is removed when the run ends, on every outcome.
 	// +optional
 	RemoveLabel string `json:"removeLabel,omitempty"`
+
+	// onIdentityError posts the printable message of an identity error (the
+	// sender must link an account first, docs/adr/0049 §6) as a comment.
+	// GitHub never reads a webhook's response body, so without this nobody
+	// would see why nothing ran. The webhook is answered 403 either way.
+	// +optional
+	OnIdentityError bool `json:"onIdentityError,omitempty"`
 }
 
 // HTTPReply POSTs the terminal outcome to a fixed URL.

@@ -85,6 +85,8 @@ export interface EventSender {
   loginFrom: string;
   isBotFrom?: string;
   repositoryFrom?: string;
+  /** CEL -> the sender's immutable account id (docs/adr/0049 §5). */
+  accountIdFrom?: string;
   dropBots?: boolean;
 }
 
@@ -129,6 +131,8 @@ export interface GitHubReplySpec {
   sessionPage?: boolean;
   result?: boolean;
   removeLabel?: string;
+  /** Post an identity error's message as a comment (docs/adr/0049 §6). */
+  onIdentityError?: boolean;
 }
 
 export interface HttpReplySpec {
@@ -192,6 +196,7 @@ export interface RenderedReply {
     sessionPage?: boolean;
     result?: boolean;
     removeLabel?: string;
+    onIdentityError?: boolean;
   };
   http?: {
     url: string;

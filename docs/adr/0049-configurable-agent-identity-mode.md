@@ -263,17 +263,44 @@ needs to do so. The only exception is opt-in: a GitHub trigger can have
 `reply.github.onIdentityError` post `message` as a comment (see Resolved
 questions).
 
-**The decision moves into the Temporal gateway's `/invoke` accept phase.**
-agent-orchestrator matches the trigger synchronously and forwards the resolved
-turn under the signed dispatch assertion. For an `agentRef` or `toolRef`
-target, the Temporal gateway then resolves the effective mode. It runs the
-non-interactive link check (`authz.ResolveLinked`) against `delegatedSubject`
-before starting the workflow. agent-orchestrator passes its `403` straight
-back to integration-gateway.
+**The decision is made in the accept phase, by the worker.** The check is
+`authz.Service.CheckIdentity`: the pre-flight's own mode decision plus a
+read-only token lookup under `delegatedSubject`. It never starts a flow or
+writes a Secret. It runs on the worker, where the catalog and identity-link
+client live, through a short `IdentityCheckWorkflow`, so the gateway grows no
+second copy of authorization. Two callers:
 
-`POST /webhooks/:source` stops relaying in the background for such sources. It
-awaits `/invoke` and passes the verdict through. This is well inside GitHub's
-10 s delivery timeout.
+- The Temporal gateway's own `/invoke` runs it before starting the workflow,
+  for a direct caller whose turn names its agent.
+- agent-orchestrator accepts a trigger turn (`202`) *before* the turn reaches
+  the engine. So for an `agentRef` trigger with a sender, it first asks
+  `POST /invoke/check` (same body and signed headers as `/invoke`; `204` = no
+  objection, `403` = the error). It answers the webhook relay with that `403`,
+  adding the trigger's rendered `reply`.
+
+The check only ever *speeds up* a refusal. When it cannot run (timeout,
+error, the agent is not visible) it answers "no objection", and the run's
+own pre-flight refuses the same way.
+
+`POST /webhooks/:source` now answers once the relay's accept is known,
+instead of acking `202` up front. A refused sender gets the `403` body
+verbatim. Every other outcome (dropped, unmatched, a failed relay, or an
+accepted run that continues in the background) is still `202`, so senders
+don't retry.
+
+A sender the gateway could not resolve to exactly one subject gets a code
+naming why, and only `identity_link_required` asks them to link:
+
+| sender status | code |
+| --- | --- |
+| linked, but no usable link under it | `identity_link_required` |
+| `unlinked` (no subject holds the account) | `identity_link_required` |
+| `ambiguous` (several subjects) | `identity_ambiguous` |
+| `unavailable` (lookup failed or not configured), or no `accountIdFrom` on the source | `identity_unavailable` |
+
+The account-id index is a `aktis.ai/account-id` label holding a SHA-256 prefix
+of the id (not every provider's id is a valid label value). The exact
+`accountId` field is re-checked on every hit.
 
 ```
 HTTP/1.1 403 Forbidden

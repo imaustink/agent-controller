@@ -35,7 +35,8 @@ import {
   writeSseDone,
   writeSseStatus,
 } from "./openai/chat-completions.js";
-import { SENDER_ASSERTION_HEADER, verifySenderAssertion } from "./rbac/sender-assertion.js";
+import { SENDER_ASSERTION_HEADER, verifySenderClaims, type SenderClaims } from "./rbac/sender-assertion.js";
+import type { IdentityRefusal } from "./engine/temporal-engine.js";
 import type { TaskCompleter } from "./openai/task-completer.js";
 import { withHeartbeat } from "./openai/with-heartbeat.js";
 import { renderTurnEvent, type TurnEvent, type TurnEventKind } from "@aktis/messaging";
@@ -231,6 +232,12 @@ export interface AgentGraphInput {
    * any agent launch on a turn that carries it.
    */
   identityOverride?: string;
+  /**
+   * Everything integration-gateway vouched for about a webhook sender
+   * (docs/adr/0049 §5): the account id and the subject it is linked under.
+   * Re-signed onto the engine hop; `senderLogin` stays the login.
+   */
+  senderClaims?: SenderClaims;
   /** The trigger's params in §4 string form -> `AgentRun.spec.params` of the targeted agent. */
   params?: Record<string, string>;
   /** Name of the EventTrigger that started this turn. */
@@ -266,6 +273,11 @@ export interface AgentGraphLike {
     input: AgentGraphInput,
     options: { streamMode: "updates" },
   ): Promise<AsyncIterable<Record<string, Partial<AgentState>>>>;
+  /**
+   * The engine's accept-phase identity check (docs/adr/0049 §6), when it has
+   * one: the Temporal engine does; the LangGraph engine has no identity modes.
+   */
+  checkIdentity?(input: AgentGraphInput): Promise<IdentityRefusal | undefined>;
 }
 
 /**
@@ -928,6 +940,7 @@ export class InvokeServer {
     let sessionId: string | undefined;
     let identityLinkFlow: "device" | "authcode" | undefined;
     let senderLogin: string | undefined;
+    let senderClaims: SenderClaims | undefined;
     let envelope: Envelope | undefined;
     // Consumer-supplied tools (docs/adr/0035), accepted here too so a
     // programmatic `/invoke` caller has parity with the chat facade. The raw
@@ -973,10 +986,8 @@ export class InvokeServer {
       // gateway's /invoke token could name an arbitrary login and be handed
       // that person's credentials.
       if (this.senderAssertionSecret) {
-        senderLogin = verifySenderAssertion(
-          this.senderAssertionSecret,
-          headerValue(req.headers[SENDER_ASSERTION_HEADER]),
-        );
+        senderClaims = verifySenderClaims(this.senderAssertionSecret, headerValue(req.headers[SENDER_ASSERTION_HEADER]));
+        senderLogin = senderClaims?.login;
       } else if (envelope) {
         const login = envelope.sender.login;
         if (typeof login === "string" && login.trim() !== "") senderLogin = login;
@@ -1052,6 +1063,31 @@ export class InvokeServer {
       return;
     }
 
+    // Accept-phase identity check (docs/adr/0049 §6): a trigger turn whose
+    // agent must act as its webhook sender, who cannot be acted as, is refused
+    // NOW, synchronously, so the webhook caller can resolve it -- not accepted
+    // and then failed where nobody is listening.
+    if (trigger?.forcedAgentId && senderLogin && this.graph.checkIdentity) {
+      const refusal = await this.graph.checkIdentity({
+        request,
+        ...(sessionId ? { sessionId } : {}),
+        senderLogin,
+        ...(senderClaims ? { senderClaims } : {}),
+        ...(targetRepository ? { targetRepository } : {}),
+        triggerName: trigger.triggerName,
+        forcedAgentId: trigger.forcedAgentId,
+        ...(trigger.readOnly ? { readOnly: true } : {}),
+        ...(Object.keys(trigger.params).length > 0 ? { params: trigger.params } : {}),
+        ...(trigger.identity ? { identityOverride: trigger.identity } : {}),
+      } as AgentGraphInput);
+      if (refusal) {
+        res.writeHead(403, { "content-type": "application/json" }).end(
+          JSON.stringify({ ...refusal, error: { ...refusal.error, ...(triggerResponse ? { trigger: triggerResponse } : {}) } }),
+        );
+        return;
+      }
+    }
+
     const authToken = bearerToken(req.headers.authorization);
     const id = randomUUID();
     await this.invocations.set(id, { id, status: "pending" });
@@ -1090,6 +1126,7 @@ export class InvokeServer {
       trigger,
     ).then(async (graphInput) => {
       if (targetRepository) graphInput.targetRepository = targetRepository;
+      if (senderClaims) graphInput.senderClaims = senderClaims;
       // Persist the turn's read-only mode BEFORE anything launches (see
       // `setSessionReadOnly`): a read-only turn's, and a trigger turn's
       // either way. Awaited, and a failure fails the turn: the flag's job is

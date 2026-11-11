@@ -43,6 +43,7 @@ spec:
     loginFrom: body.sender.login    # CEL -> string
     isBotFrom: body.sender.type == "Bot"   # CEL -> bool (optional; default false)
     repositoryFrom: body.repository.full_name  # CEL -> "owner/name" (optional)
+    accountIdFrom: body.sender.id   # CEL -> immutable account id (optional; ADR 0049 §5)
     dropBots: true                  # default true: bot-authored events are dropped (self-trigger guard)
 ---
 kind: EventSource
@@ -273,6 +274,16 @@ create|merge|close|reopen|ready|edit`, mint a `contents:read` token) from
   requires the username `system:serviceaccount:<CRD_NAMESPACE>:eventsource-<source>`
   — anything else (including another source's tick) is `401`, before the source
   is looked up; then `404` unless the source is `cron`; `202`.
+- **The webhook is answered once the relay's accept is known** (ADR 0049 §6).
+  An agent that must act as its sender, who cannot be acted as, is a `403`
+  carrying `{status:"failed", error:{code, message, identityMode, target,
+  sender, missing[{provider,label,linkUrl}], trigger}}`. `message` is safe to
+  print to the sender. `code` is `identity_link_required`,
+  `identity_ambiguous` or `identity_unavailable`. Every other outcome is `202`.
+  With `reply.github.onIdentityError` the message is also posted as a comment,
+  since GitHub never reads a response body. A source's `sender.accountIdFrom`
+  is what resolves a sender to the subject their links live under. The gateway
+  signs `{login, accountId, subject?, subjectStatus}` into the sender assertion.
 - Reply adapters run only for the `reply` the orchestrator returned: `github.ack`
   (+ session page link) before polling; `github.result` / `http` after;
   `github.removeLabel` after, on every outcome, through the durable pending-action

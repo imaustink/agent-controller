@@ -446,6 +446,9 @@ async function main(): Promise<void> {
     ...(eventSecrets ? { secrets: eventSecrets } : {}),
     ...(tickAuthenticator ? { tickAuthenticator, tickNamespace: config.crdNamespace } : {}),
     identityResolver,
+    // docs/adr/0049 §5: a verified sender's account id -> the subject their
+    // links live under.
+    ...(identityLinkStore ? { senderSubjects: identityLinkStore } : {}),
     orchestratorClient,
     githubReplyClient,
     ...(identityLinkLinker ? { identityLinkLinker, identityLinkToken: config.identityLinkToken } : {}),

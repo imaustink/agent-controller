@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { TemporalEngine } from "./temporal-engine.js";
 import { SENDER_ASSERTION_HEADER } from "../rbac/sender-assertion.js";
-import { verifySenderAssertion } from "../rbac/sender-assertion.js";
+import { verifySenderAssertion, verifySenderClaims } from "../rbac/sender-assertion.js";
 import type { AgentGraphInput } from "../server.js";
 import { SignJWT } from "jose";
 import { CALLER_IDENTITY_HEADER } from "../rbac/caller-identity-assertion.js";
@@ -652,5 +652,42 @@ describe("TemporalEngine", () => {
       expect(resolve).not.toHaveBeenCalled();
       expect(assertedSubjects(calls)).toEqual([undefined]);
     });
+  });
+});
+
+describe("TemporalEngine sender claims and the accept-phase check (docs/adr/0049 §5-§6)", () => {
+  const claims = { login: "alice", accountId: "583231", subject: "openwebui:a", subjectStatus: "linked" as const };
+
+  it("re-signs the gateway's full sender claims onto the engine hop", async () => {
+    const { impl, calls } = scriptedFetch([{ id: "x", status: "succeeded", result: "ok" }]);
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl, senderAssertionSecret: ASSERTION_SECRET });
+    await engine.invoke(input({ senderLogin: "alice", senderClaims: claims }));
+    const header = (calls[0]!.init!.headers as Record<string, string>)[SENDER_ASSERTION_HEADER]!;
+    expect(verifySenderClaims(ASSERTION_SECRET, header)).toEqual(claims);
+  });
+
+  it("returns the engine's 403 identity error, and nothing for any other answer", async () => {
+    const refusal = { status: "failed", error: { code: "identity_link_required", message: "link it" } };
+    const answers: Array<[Response | Error, unknown]> = [
+      [new Response(JSON.stringify(refusal), { status: 403 }), refusal],
+      [new Response(null, { status: 204 }), undefined],
+      [new Response("nope", { status: 500 }), undefined],
+      [new Response(JSON.stringify({ unrelated: true }), { status: 403 }), undefined],
+      [new Error("connection refused"), undefined],
+    ];
+    for (const [answer, expected] of answers) {
+      const urls: string[] = [];
+      const impl = vi.fn(async (url: string | URL | Request) => {
+        urls.push(String(url));
+        if (answer instanceof Error) throw answer;
+        return answer;
+      }) as unknown as typeof fetch;
+      const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl, senderAssertionSecret: ASSERTION_SECRET });
+      const got = await engine.checkIdentity(
+        input({ triggerName: "t", forcedAgentId: "swe", senderLogin: "alice", senderClaims: claims, identityOverride: "delegated" }),
+      );
+      expect(got).toEqual(expected);
+      expect(urls).toEqual([`${BASE}/invoke/check`]);
+    }
   });
 });

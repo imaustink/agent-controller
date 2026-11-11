@@ -34,6 +34,8 @@ export interface CompiledSender {
   loginFrom: CompiledExpression;
   isBotFrom?: CompiledExpression;
   repositoryFrom?: CompiledExpression;
+  /** The sender's immutable account id (docs/adr/0049 §5); see `EventSender.accountIdFrom`. */
+  accountIdFrom?: CompiledExpression;
   /** Default true: bot-authored events are dropped (self-trigger guard). */
   dropBots: boolean;
 }
@@ -97,11 +99,18 @@ export function compileEventSource(resource: EventSourceResource): CompileSource
       if (!c.ok) return c;
       repository = c.expression;
     }
+    let accountId: CompiledExpression | undefined;
+    if (spec.sender.accountIdFrom !== undefined) {
+      const c = compileField("spec.sender.accountIdFrom", spec.sender.accountIdFrom);
+      if (!c.ok) return c;
+      accountId = c.expression;
+    }
     sender = {
       provider: "github",
       loginFrom: login.expression,
       ...(isBot ? { isBotFrom: isBot } : {}),
       ...(repository ? { repositoryFrom: repository } : {}),
+      ...(accountId ? { accountIdFrom: accountId } : {}),
       dropBots: spec.sender.dropBots ?? true,
     };
   }

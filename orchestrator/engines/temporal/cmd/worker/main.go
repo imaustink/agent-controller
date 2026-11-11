@@ -74,6 +74,9 @@ func main() {
 	w.RegisterWorkflowWithOptions(workflows.BridgedAgentWorkflow, workflow.RegisterOptions{
 		Name: workflows.BridgedAgentWorkflowName,
 	})
+	w.RegisterWorkflowWithOptions(workflows.IdentityCheckWorkflow, workflow.RegisterOptions{
+		Name: workflows.IdentityCheckWorkflowName,
+	})
 	w.RegisterActivityWithOptions((&activities.LLMActivities{Client: llmClient}).CompleteTurn, activity.RegisterOptions{
 		Name: activities.CompleteTurnActivityName,
 	})
@@ -145,6 +148,7 @@ func main() {
 	})}
 	w.RegisterActivityWithOptions(authorize.Authorize, activity.RegisterOptions{Name: activities.AuthorizeActivityName})
 	w.RegisterActivityWithOptions(authorize.ResolveLinked, activity.RegisterOptions{Name: activities.ResolveLinkedActivityName})
+	w.RegisterActivityWithOptions(authorize.CheckIdentity, activity.RegisterOptions{Name: activities.CheckIdentityActivityName})
 	w.RegisterActivityWithOptions(authorize.ResolveToolCredentials, activity.RegisterOptions{Name: activities.ResolveToolCredentialsActivityName})
 
 	// Retrieval activities need Qdrant; without it the worker still serves

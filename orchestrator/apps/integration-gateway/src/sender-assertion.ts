@@ -22,8 +22,28 @@ export const SENDER_ASSERTION_HEADER = "x-gateway-user-assertion";
 /** How long a minted assertion stays valid. Seconds, not hours: it is created and consumed within one HTTP call. */
 const DEFAULT_TTL_SECONDS = 300;
 
-interface AssertionPayload {
+/**
+ * Whether a verified sender resolved to a subject their links live under
+ * (docs/adr/0049 §5): `linked` (exactly one), `unlinked` (none), `ambiguous`
+ * (more than one), or `unavailable` (the lookup failed or is not configured).
+ */
+export type SenderSubjectStatus = "linked" | "unlinked" | "ambiguous" | "unavailable";
+
+/**
+ * What the gateway vouches for about a webhook sender. `login` is all an older
+ * verifier reads; the rest is additive (the signature covers the received
+ * bytes and verifiers only decode, so extra fields cannot break one).
+ */
+export interface SenderClaims {
   login: string;
+  /** The provider's immutable account id, when the source extracts one. */
+  accountId?: string;
+  /** The subject the account is linked under; only with `subjectStatus: "linked"`. */
+  subject?: string;
+  subjectStatus?: SenderSubjectStatus;
+}
+
+interface AssertionPayload extends SenderClaims {
   /** Unix seconds. */
   exp: number;
 }
@@ -44,8 +64,21 @@ function sign(secret: string, payloadB64: string): string {
  * JWT library to the gateway purely to agree with the orchestrator's. Same
  * no-new-dependency precedent as `githubApp.ts`'s JWT signing.
  */
-export function mintSenderAssertion(secret: string, login: string, ttlSeconds = DEFAULT_TTL_SECONDS, now = Date.now()): string {
-  const payload: AssertionPayload = { login, exp: Math.floor(now / 1000) + ttlSeconds };
+export function mintSenderAssertion(
+  secret: string,
+  sender: string | SenderClaims,
+  ttlSeconds = DEFAULT_TTL_SECONDS,
+  now = Date.now(),
+): string {
+  const claims: SenderClaims = typeof sender === "string" ? { login: sender } : sender;
+  const payload: AssertionPayload = {
+    login: claims.login,
+    ...(claims.accountId ? { accountId: claims.accountId } : {}),
+    ...(claims.subjectStatus ? { subjectStatus: claims.subjectStatus } : {}),
+    // A subject is only ever vouched for when it is THE one linked subject.
+    ...(claims.subjectStatus === "linked" && claims.subject ? { subject: claims.subject } : {}),
+    exp: Math.floor(now / 1000) + ttlSeconds,
+  };
   const payloadB64 = b64url(Buffer.from(JSON.stringify(payload), "utf8"));
   return `${payloadB64}.${sign(secret, payloadB64)}`;
 }

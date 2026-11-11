@@ -109,6 +109,8 @@ describe("GithubDeviceFlowLinker.poll", () => {
     );
     expect(setSpy).toHaveBeenCalledWith("github", "user-1", {
       githubLogin: "octocat",
+      // The immutable id a webhook sender is resolved by (docs/adr/0049 §5).
+      accountId: "4242",
       token: "gho_abc",
       expiresAt: "2026-07-20T12:00:00.000Z",
       refreshToken: "ghr_def",
@@ -203,6 +205,8 @@ describe("GithubDeviceFlowLinker.completeAuthCode", () => {
     expect(result).toEqual({ subject: "user-1" });
     expect(setSpy).toHaveBeenCalledWith("github", "user-1", {
       githubLogin: "octocat",
+      // The immutable id a webhook sender is resolved by (docs/adr/0049 §5).
+      accountId: "4242",
       token: "gho_abc",
       expiresAt: "2026-07-20T12:00:00.000Z",
       refreshToken: "ghr_def",
@@ -306,6 +310,36 @@ describe("GithubDeviceFlowLinker.getValidToken", () => {
     expect(refreshSpy).not.toHaveBeenCalled();
   });
 
+  // docs/adr/0049 §5: a webhook sender resolves to this subject by account id,
+  // so a refresh must keep it, and backfill it on a record linked before it
+  // was recorded.
+  it("keeps the account id across a refresh, and backfills a missing one", async () => {
+    for (const existing of ["999", undefined]) {
+      const store = makeInMemoryStore();
+      await store.set("github", "user-1", {
+        githubLogin: "octocat",
+        ...(existing ? { accountId: existing } : {}),
+        token: "gho_stale",
+        expiresAt: new Date(Date.now() - 1_000).toISOString(),
+        refreshToken: "ghr_old",
+        refreshExpiresAt: undefined,
+      });
+      vi.spyOn(deviceFlow, "refreshUserToken").mockResolvedValue({
+        token: "gho_new",
+        refreshToken: "ghr_new",
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        refreshExpiresAt: undefined,
+      });
+      const fetchImpl = makeFetchMock("octocat");
+      const linker = new GithubDeviceFlowLinker({ clientId: "c", clientSecret: "s", scope: undefined, store, fetchImpl });
+
+      await linker.getValidToken("user-1");
+
+      expect((await store.get("github", "user-1"))?.accountId).toBe(existing ?? "4242");
+      if (existing) expect(fetchImpl).not.toHaveBeenCalled();
+    }
+  });
+
   it("refreshes and persists a stale/expired token", async () => {
     const store = makeInMemoryStore();
     await store.set("github", "user-1", {
@@ -322,7 +356,13 @@ describe("GithubDeviceFlowLinker.getValidToken", () => {
       refreshExpiresAt: undefined,
     });
     // `clientSecret` is required for the refresh grant -- see the no-secret test below.
-    const linker = new GithubDeviceFlowLinker({ clientId: "client-1", clientSecret: "secret-1", scope: undefined, store });
+    const linker = new GithubDeviceFlowLinker({
+      clientId: "client-1",
+      clientSecret: "secret-1",
+      scope: undefined,
+      store,
+      fetchImpl: makeFetchMock("octocat"),
+    });
 
     const result = await linker.getValidToken("user-1");
 

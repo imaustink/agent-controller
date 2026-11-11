@@ -92,9 +92,10 @@ export class GithubDeviceFlowLinker {
       case "denied":
         return { status: "denied" };
       case "complete": {
-        const githubLogin = await this.fetchGithubLogin(result.token);
+        const { login: githubLogin, accountId } = await this.fetchGithubAccount(result.token);
         await this.options.store.set(PROVIDER, subject, {
           githubLogin,
+          accountId,
           token: result.token,
           expiresAt: result.expiresAt,
           refreshToken: result.refreshToken,
@@ -169,9 +170,10 @@ export class GithubDeviceFlowLinker {
       return undefined;
     }
 
-    const githubLogin = await this.fetchGithubLogin(exchanged.token);
+    const { login: githubLogin, accountId } = await this.fetchGithubAccount(exchanged.token);
     await this.options.store.set(PROVIDER, verifiedState.subject, {
       githubLogin,
+      accountId,
       token: exchanged.token,
       expiresAt: exchanged.expiresAt,
       refreshToken: exchanged.refreshToken,
@@ -222,8 +224,23 @@ export class GithubDeviceFlowLinker {
         cred.refreshToken,
         this.options.githubBaseUrl,
       );
+      // Keep the account id, and backfill it on a record linked before it was
+      // recorded (docs/adr/0049 §5): until then a webhook sender cannot be
+      // resolved to this subject. Best-effort -- a failed lookup costs only
+      // that, never the refreshed token.
+      let accountId = cred.accountId;
+      if (!accountId) {
+        try {
+          accountId = (await this.fetchGithubAccount(refreshed.token)).accountId;
+        } catch (err) {
+          console.error(
+            `[identity-link] could not backfill the github account id on refresh: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
       await this.options.store.set(PROVIDER, subject, {
         githubLogin: cred.githubLogin,
+        ...(accountId ? { accountId } : {}),
         token: refreshed.token,
         expiresAt: refreshed.expiresAt,
         refreshToken: refreshed.refreshToken,
@@ -263,7 +280,12 @@ export class GithubDeviceFlowLinker {
     return cred?.githubLogin;
   }
 
-  private async fetchGithubLogin(token: string): Promise<string> {
+  /**
+   * The linked account's login and its immutable numeric id. The id is what a
+   * webhook sender is resolved by (docs/adr/0049 §5): a login can be renamed
+   * and re-registered by someone else, the id cannot.
+   */
+  private async fetchGithubAccount(token: string): Promise<{ login: string; accountId: string }> {
     // Was hardcoded to https://api.github.com, ignoring apiBaseUrl entirely --
     // harmless in production (that IS the real API host) but it meant this
     // path could never be exercised hermetically, and nothing had ever
@@ -271,7 +293,7 @@ export class GithubDeviceFlowLinker {
     // resuming device flows), so the bug sat dormant. Reuses the same helper
     // delegatedWrite's own GitHub /user lookup already uses rather than a
     // second hand-copied version of the same call.
-    const { login } = await fetchGithubUser(token, this.options.apiBaseUrl ?? "https://api.github.com", this.fetchImpl);
-    return login;
+    const { login, id } = await fetchGithubUser(token, this.options.apiBaseUrl ?? "https://api.github.com", this.fetchImpl);
+    return { login, accountId: String(id) };
   }
 }

@@ -68,6 +68,23 @@ const SOURCES: EventSourceResource[] = [
     },
   },
   {
+    // docs/adr/0049 §5: a source that also extracts the immutable account id.
+    metadata: { name: "github-ids" },
+    spec: {
+      webhook: {
+        verify: { scheme: "hmacSha256", header: "x-hub-signature-256", prefix: "sha256=", secretRef: { name: "gh", key: "secret" } },
+        deliveryIdHeader: "x-github-delivery",
+      },
+      sender: {
+        provider: "github",
+        loginFrom: "body.sender.login",
+        isBotFrom: 'body.sender.type == "Bot"',
+        repositoryFrom: "body.repository.full_name",
+        accountIdFrom: "body.sender.id",
+      },
+    },
+  },
+  {
     metadata: { name: "plain" },
     spec: { webhook: { verify: { scheme: "hmacSha256", header: "x-sig", secretRef: { name: "gh", key: "secret" } } } },
   },
@@ -406,7 +423,7 @@ describe("sender verification", () => {
     await postGithub(h);
     await vi.waitFor(() => expect(h.submitEvent).toHaveBeenCalled());
     expect(h.resolve).toHaveBeenCalledWith("alice", false, { owner: "acme", repo: "widgets" });
-    expect(h.submitEvent.mock.calls[0]?.[1]).toBe("alice");
+    expect(h.submitEvent.mock.calls[0]?.[1]).toEqual({ login: "alice" });
     const envelope = submittedEnvelope(h);
     expect(envelope.sender).toEqual({ login: "alice", isBot: false });
     expect(envelope.repository).toBe("acme/widgets");
@@ -483,7 +500,7 @@ describe("sender lookups are skipped for deliveries no trigger could match", () 
     await postGithub(h);
     await vi.waitFor(() => expect(h.submitEvent).toHaveBeenCalled());
     expect(h.resolve).toHaveBeenCalledWith("alice", false, { owner: "acme", repo: "widgets" });
-    expect(h.submitEvent.mock.calls[0]?.[1]).toBe("alice");
+    expect(h.submitEvent.mock.calls[0]?.[1]).toEqual({ login: "alice" });
   });
 
   it("a trigger that reads `sender` can't be decided early, so the sender is resolved", async () => {
@@ -842,3 +859,91 @@ describe("live session tunnel (ADR 0026)", () => {
     expect((await h.sessionPageStore.getByToken(entry.token))?.live).toEqual({ agentRunId: "run-42", opencodeSessionId: "ses_abc123" });
   });
 });
+
+describe("webhook sender -> delegated subject (docs/adr/0049 §5-§6)", () => {
+  const PAYLOAD = { ...GITHUB_PAYLOAD, sender: { login: "alice", type: "User", id: 583231 } };
+  function postIds(h: Harness): Promise<Response> {
+    const body = JSON.stringify(PAYLOAD);
+    return fetch(`http://localhost:${h.port}/webhooks/github-ids`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-github-event": "pull_request",
+        "x-github-delivery": "delivery-ids",
+        "x-hub-signature-256": `sha256=${hmacHex("gh-secret", body)}`,
+      },
+      body,
+    });
+  }
+
+  it.each([
+    ["one linked subject", async () => ["openwebui:alice"], { subject: "openwebui:alice", subjectStatus: "linked" }],
+    ["no linked subject", async () => [], { subjectStatus: "unlinked" }],
+    ["several linked subjects", async () => ["openwebui:a", "openwebui:b"], { subjectStatus: "ambiguous" }],
+    [
+      "a failed lookup",
+      async () => {
+        throw new Error("apiserver down");
+      },
+      { subjectStatus: "unavailable" },
+    ],
+  ] as Array<[string, () => Promise<string[]>, Record<string, string>]>)(
+    "vouches for the sender's account id and subject: %s",
+    async (_, find, expected) => {
+      const findSubjectsByAccount = vi.fn(find);
+      const h = await start({ senderSubjects: { findSubjectsByAccount } });
+      expect((await postIds(h)).status).toBe(202);
+      expect(findSubjectsByAccount).toHaveBeenCalledWith("github", "583231");
+      expect(h.submitEvent.mock.calls[0]?.[1]).toEqual({ login: "alice", accountId: "583231", ...expected });
+    },
+  );
+
+  it("is unavailable, never linked, when no store is configured", async () => {
+    const h = await start();
+    await postIds(h);
+    expect(h.submitEvent.mock.calls[0]?.[1]).toEqual({ login: "alice", accountId: "583231", subjectStatus: "unavailable" });
+  });
+
+  const identityError = (onIdentityError: boolean): EventSubmitResult => ({
+    kind: "identity-required",
+    body: {
+      status: "failed",
+      error: {
+        code: "identity_link_required",
+        message: "alice: link your GitHub account so swe can act as you: https://gw/connections",
+        trigger: {
+          name: "review",
+          sessionId: "s",
+          reply: { github: { repository: "acme/widgets", issueNumber: 7, ...(onIdentityError ? { onIdentityError: true } : {}) } },
+        },
+      },
+    },
+  });
+
+  it("answers 403 with the engine's identity error body, verbatim", async () => {
+    const h = await start({ senderSubjects: { findSubjectsByAccount: async () => [] } });
+    h.submitEvent.mockResolvedValueOnce(identityError(false));
+    const res = await postIds(h);
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("identity_link_required");
+    expect(body.error.message).toContain("link your GitHub account");
+    await settle();
+    expect(h.poll).not.toHaveBeenCalled();
+    expect(h.postIssueComment).not.toHaveBeenCalled();
+  });
+
+  it("posts the identity error's message on the issue only when the trigger opts in", async () => {
+    const h = await start({ senderSubjects: { findSubjectsByAccount: async () => [] } });
+    h.submitEvent.mockResolvedValueOnce(identityError(true));
+    expect((await postIds(h)).status).toBe(403);
+    await vi.waitFor(() => expect(h.postIssueComment).toHaveBeenCalled());
+    expect(h.postIssueComment).toHaveBeenCalledWith(
+      "acme",
+      "widgets",
+      7,
+      "alice: link your GitHub account so swe can act as you: https://gw/connections",
+    );
+  });
+});
+

@@ -148,7 +148,9 @@ func (s *Service) gateRepository(ctx context.Context, req Request, mode launchMo
 		return fmt.Sprintf("`%s` isn't a GitHub repository I can work in. Name it as `owner/repo`.", repo), nil
 	}
 
-	if !req.Identity.PerUser {
+	// A webhook sender acted as through their delegated subject (docs/adr/0049
+	// §5) is checked with their OWN token, exactly like a chat caller: below.
+	if !req.Identity.PerUser && !(req.Identity.DelegatedSubject != "" && userToken != "") {
 		if req.SenderLogin == "" {
 			return fmt.Sprintf("I couldn't verify who is asking, so I didn't start %s.", req.AgentID), nil
 		}
