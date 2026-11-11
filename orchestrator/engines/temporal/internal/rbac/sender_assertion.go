@@ -29,9 +29,30 @@ const DefaultAssertionTTL = 300 * time.Second
 // JSON, so swapping these two would silently stop verifying assertions minted
 // by the TypeScript gateway. Pinned by the cross-implementation vectors in
 // sender_assertion_test.go.
-type assertionPayload struct {
+// Sender subject statuses (docs/adr/0049 §5): whether a verified sender
+// resolved to the subject their linked accounts live under.
+const (
+	SenderSubjectLinked      = "linked"
+	SenderSubjectUnlinked    = "unlinked"
+	SenderSubjectAmbiguous   = "ambiguous"
+	SenderSubjectUnavailable = "unavailable"
+)
+
+// SenderClaims is everything integration-gateway vouches for about a webhook
+// sender. Login is all a pre-0049 assertion carries; the rest is additive.
+type SenderClaims struct {
 	Login string `json:"login"`
-	Exp   int64  `json:"exp"` // unix seconds
+	// AccountID is the provider's immutable account id.
+	AccountID string `json:"accountId,omitempty"`
+	// Subject is the one subject the account is linked under; set only with
+	// SubjectStatus "linked".
+	Subject       string `json:"subject,omitempty"`
+	SubjectStatus string `json:"subjectStatus,omitempty"`
+}
+
+type assertionPayload struct {
+	SenderClaims
+	Exp int64 `json:"exp"` // unix seconds
 }
 
 func signAssertion(secret, payloadB64 string) string {
@@ -47,7 +68,16 @@ func signAssertion(secret, payloadB64 string) string {
 // with agent-orchestrator's mintSenderAssertion — an assertion minted by
 // either implementation verifies with the other.
 func MintSenderAssertion(secret, login string, ttl time.Duration, now time.Time) string {
-	payload := assertionPayload{Login: login, Exp: now.Unix() + int64(ttl.Seconds())}
+	return MintSenderClaims(secret, SenderClaims{Login: login}, ttl, now)
+}
+
+// MintSenderClaims mints an assertion carrying the full claim set. A subject
+// is only ever carried with SubjectStatus "linked".
+func MintSenderClaims(secret string, claims SenderClaims, ttl time.Duration, now time.Time) string {
+	if claims.SubjectStatus != SenderSubjectLinked {
+		claims.Subject = ""
+	}
+	payload := assertionPayload{SenderClaims: claims, Exp: now.Unix() + int64(ttl.Seconds())}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return "" // unreachable: two strings and an int
@@ -63,8 +93,18 @@ func MintSenderAssertion(secret, login string, ttl time.Duration, now time.Time)
 // cannot prove who they are is treated as not having said, which downstream
 // means "no principal" rather than "someone else's principal".
 func VerifySenderAssertion(secret, assertion string, now time.Time) string {
+	if c := VerifySenderClaims(secret, assertion, now); c != nil {
+		return c.Login
+	}
+	return ""
+}
+
+// VerifySenderClaims verifies an assertion and returns its claims, or nil. A
+// subject that is not "linked" is dropped, so a caller can never act on one
+// the gateway did not vouch for as THE linked subject.
+func VerifySenderClaims(secret, assertion string, now time.Time) *SenderClaims {
 	if secret == "" || assertion == "" {
-		return ""
+		return nil
 	}
 
 	// Exactly two parts. Neither half can contain a '.' — both are base64url,
@@ -74,36 +114,40 @@ func VerifySenderAssertion(secret, assertion string, now time.Time) string {
 	for i := 0; i < len(assertion); i++ {
 		if assertion[i] == '.' {
 			if dot >= 0 {
-				return ""
+				return nil
 			}
 			dot = i
 		}
 	}
 	if dot <= 0 || dot == len(assertion)-1 {
-		return ""
+		return nil
 	}
 	payloadB64, signature := assertion[:dot], assertion[dot+1:]
 
 	expected := signAssertion(secret, payloadB64)
 	if !hmac.Equal([]byte(expected), []byte(signature)) {
-		return ""
+		return nil
 	}
 
 	raw, err := base64.RawURLEncoding.DecodeString(payloadB64)
 	if err != nil {
-		return ""
+		return nil
 	}
 	var payload assertionPayload
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return ""
+		return nil
 	}
 	if payload.Login == "" || payload.Exp <= 0 {
-		return ""
+		return nil
 	}
 	if payload.Exp*1000 <= now.UnixMilli() {
-		return ""
+		return nil
 	}
-	return payload.Login
+	claims := payload.SenderClaims
+	if claims.SubjectStatus != SenderSubjectLinked {
+		claims.Subject = ""
+	}
+	return &claims
 }
 
 // WarnIfSenderAssertionUnset mirrors upstream's startup discipline: with no

@@ -12,6 +12,7 @@ import (
 
 const (
 	AuthorizeActivityName              = "Authorize"
+	CheckIdentityActivityName          = "CheckIdentity"
 	ResolveLinkedActivityName          = "ResolveLinked"
 	ResolveToolCredentialsActivityName = "ResolveToolCredentials"
 )
@@ -48,6 +49,13 @@ type AuthorizeInput struct {
 	// TriggerName is the EventTrigger that produced the turn. Audit only: it
 	// decides nothing here.
 	TriggerName string `json:"triggerName,omitempty"`
+
+	// DelegatedSubject / SenderAccountID / SenderSubjectStatus are the
+	// gateway's signed sender claim (docs/adr/0049 §5); see
+	// authz.Identity.DelegatedSubject and authz.Request.
+	DelegatedSubject    string `json:"delegatedSubject,omitempty"`
+	SenderAccountID     string `json:"senderAccountId,omitempty"`
+	SenderSubjectStatus string `json:"senderSubjectStatus,omitempty"`
 }
 
 // AuthorizeActivities is the workflow-facing side of the pre-flight.
@@ -67,21 +75,24 @@ func (in AuthorizeInput) request() authz.Request {
 		AgentID:           in.AgentID,
 		IdentityProviders: in.IdentityProviders,
 		Identity: authz.Identity{
-			Subject:   in.Caller.Subject,
-			Roles:     in.Caller.Roles,
-			Principal: in.Caller.Principal,
-			PerUser:   in.Caller.PerUser,
+			Subject:          in.Caller.Subject,
+			Roles:            in.Caller.Roles,
+			Principal:        in.Caller.Principal,
+			PerUser:          in.Caller.PerUser,
+			DelegatedSubject: in.DelegatedSubject,
 		},
-		SenderLogin:       in.SenderLogin,
-		Flow:              in.Flow,
-		WaitForLink:       in.WaitForLink,
-		RunTimeoutSeconds: in.RunTimeoutSeconds,
-		Pending:           in.Pending,
-		TargetRepository:  in.TargetRepository,
-		ReadOnly:          in.ReadOnly,
-		DefaultIdentity:   in.DefaultIdentity,
-		AllowedIdentities: in.AllowedIdentities,
-		IdentityOverride:  in.IdentityOverride,
+		SenderLogin:         in.SenderLogin,
+		SenderAccountID:     in.SenderAccountID,
+		SenderSubjectStatus: in.SenderSubjectStatus,
+		Flow:                in.Flow,
+		WaitForLink:         in.WaitForLink,
+		RunTimeoutSeconds:   in.RunTimeoutSeconds,
+		Pending:             in.Pending,
+		TargetRepository:    in.TargetRepository,
+		ReadOnly:            in.ReadOnly,
+		DefaultIdentity:     in.DefaultIdentity,
+		AllowedIdentities:   in.AllowedIdentities,
+		IdentityOverride:    in.IdentityOverride,
 	}
 }
 
@@ -122,6 +133,7 @@ func LaunchRecord(in AuthorizeInput, v authz.Verdict) audit.Launch {
 		DecisionID:            v.DecisionID,
 		EntryPoint:            audit.EntryPoint(in.Caller.PerUser, in.TriggerName, in.SenderLogin),
 		LaunchedBy:            in.Caller.Subject,
+		DelegatedSubject:      in.DelegatedSubject,
 		Trigger:               in.TriggerName,
 		RequestedIdentityMode: string(v.RequestedIdentityMode),
 		IdentityMode:          string(v.IdentityMode),
@@ -130,12 +142,18 @@ func LaunchRecord(in AuthorizeInput, v authz.Verdict) audit.Launch {
 		ReadOnly:              in.ReadOnly,
 	}
 	if in.SenderLogin != "" {
-		l.Sender = &audit.Sender{Provider: "github", Login: in.SenderLogin}
+		l.Sender = &audit.Sender{Provider: "github", Login: in.SenderLogin, AccountID: in.SenderAccountID}
 	}
 	for _, c := range v.Credentials {
 		l.Credentials = append(l.Credentials, audit.Credential{Provider: c.Provider, Read: c.Read, Write: c.Write})
 	}
 	return l
+}
+
+// CheckIdentity is the accept-phase identity check (docs/adr/0049 §6): read
+// only, never starts a link flow, writes nothing. Nil means no objection.
+func (a *AuthorizeActivities) CheckIdentity(ctx context.Context, in AuthorizeInput) (*authz.IdentityError, error) {
+	return a.Service.CheckIdentity(ctx, in.request()), nil
 }
 
 // ResolveLinked is the read-only variant for a paused tool call, which has no

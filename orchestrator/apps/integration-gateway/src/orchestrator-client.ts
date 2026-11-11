@@ -13,7 +13,7 @@
  */
 
 import type { Envelope, RenderedReply } from "@aktis/event-triggers";
-import { SENDER_ASSERTION_HEADER, mintSenderAssertion } from "./sender-assertion.js";
+import { SENDER_ASSERTION_HEADER, mintSenderAssertion, type SenderClaims } from "./sender-assertion.js";
 
 // Bounds retrying the initial POST past a transient connection failure (a
 // rolling orchestrator restart) -- a few seconds total, not a general-purpose
@@ -102,8 +102,34 @@ export type EventSubmitResult =
   | { kind: "rejected"; error: string }
   /** 202 -- a turn is running; poll `id`. */
   | { kind: "accepted"; id: string; trigger: AcceptedTrigger }
+  /**
+   * 403 with an identity error (docs/adr/0049 §6): the trigger's agent acts as
+   * the sender, who has no usable linked account. `body` is passed back to the
+   * webhook caller verbatim -- it is what lets them resolve it.
+   */
+  | { kind: "identity-required"; body: IdentityErrorBody }
   /** Unreachable, or any other answer (401, 5xx, a malformed 202...). */
   | { kind: "failed"; error: string };
+
+/** The `/invoke` 403 body for a sender who must link first (docs/adr/0049 §6). */
+export interface IdentityErrorBody {
+  status: "failed";
+  error: {
+    code: "identity_link_required" | "identity_ambiguous" | "identity_unavailable";
+    message: string;
+    [key: string]: unknown;
+  };
+}
+
+const IDENTITY_ERROR_CODES = new Set(["identity_link_required", "identity_ambiguous", "identity_unavailable"]);
+
+function asIdentityError(body: Record<string, unknown>): IdentityErrorBody | undefined {
+  const error = body.error;
+  if (typeof error !== "object" || error === null) return undefined;
+  const e = error as Record<string, unknown>;
+  if (typeof e.code !== "string" || !IDENTITY_ERROR_CODES.has(e.code) || typeof e.message !== "string") return undefined;
+  return body as unknown as IdentityErrorBody;
+}
 
 interface InvokePollBody {
   status: "pending" | "succeeded" | "failed";
@@ -145,7 +171,7 @@ export interface OpencodeForwardResult {
   body?: unknown;
 }
 
-function parseAcceptedTrigger(raw: unknown): AcceptedTrigger {
+export function parseAcceptedTrigger(raw: unknown): AcceptedTrigger {
   const t = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
   return {
     name: typeof t.name === "string" ? t.name : "",
@@ -261,7 +287,11 @@ export class OrchestratorClient {
    * no comment, no retry. Retried a few times over a few seconds, well inside
    * a caller's own poll budget, since that window is normally that short.
    */
-  private async postInvoke(body: Record<string, unknown>, senderLogin?: string): Promise<{ res: Response } | { networkError: unknown }> {
+  private async postInvoke(
+    body: Record<string, unknown>,
+    sender?: string | SenderClaims,
+  ): Promise<{ res: Response } | { networkError: unknown }> {
+    const senderLogin = typeof sender === "string" ? sender : sender?.login;
     const postAccept = async (): Promise<Response> =>
       this.fetchImpl(`${this.baseUrl()}/invoke`, {
         method: "POST",
@@ -277,7 +307,7 @@ export class OrchestratorClient {
           // source's sender provider VERIFIED (server.ts) -- never for a login
           // merely read out of an event body.
           ...(this.options.senderAssertionSecret && senderLogin
-            ? { [SENDER_ASSERTION_HEADER]: mintSenderAssertion(this.options.senderAssertionSecret, senderLogin) }
+            ? { [SENDER_ASSERTION_HEADER]: mintSenderAssertion(this.options.senderAssertionSecret, sender!) }
             : {}),
         },
         body: JSON.stringify(body),
@@ -309,8 +339,8 @@ export class OrchestratorClient {
    * `senderLogin` must be a VERIFIED login (the source's sender provider
    * resolved it) or absent; it is what the signed sender assertion carries.
    */
-  async submitEvent(event: Envelope, senderLogin?: string): Promise<EventSubmitResult> {
-    const sent = await this.postInvoke({ event, identity_link_flow: "device" }, senderLogin);
+  async submitEvent(event: Envelope, sender?: string | SenderClaims): Promise<EventSubmitResult> {
+    const sent = await this.postInvoke({ event, identity_link_flow: "device" }, sender);
     if (!("res" in sent)) return { kind: "failed", error: `/invoke unreachable: ${errorText(sent.networkError)}` };
     const res = sent.res;
     const text = await res.text();
@@ -325,6 +355,10 @@ export class OrchestratorClient {
     if (res.status === 422) return { kind: "rejected", error: typeof body.error === "string" ? body.error : text || "unprocessable event" };
     if (res.status === 202 && typeof body.id === "string" && body.id) {
       return { kind: "accepted", id: body.id, trigger: parseAcceptedTrigger(body.trigger) };
+    }
+    if (res.status === 403) {
+      const identity = asIdentityError(body);
+      if (identity) return { kind: "identity-required", body: identity };
     }
     return { kind: "failed", error: `/invoke answered ${res.status}: ${text}` };
   }

@@ -66,6 +66,8 @@ type EventGitHubReply struct {
 	SessionPage bool   `json:"sessionPage,omitempty"`
 	Result      bool   `json:"result,omitempty"`
 	RemoveLabel string `json:"removeLabel,omitempty"`
+	// OnIdentityError: docs/adr/0049 §6.
+	OnIdentityError bool `json:"onIdentityError,omitempty"`
 }
 
 // EventHTTPReply's URL is a literal and is never rendered: a reply target must
@@ -605,6 +607,8 @@ type RenderedGitHubReply struct {
 	SessionPage bool   `json:"sessionPage,omitempty"`
 	Result      bool   `json:"result,omitempty"`
 	RemoveLabel string `json:"removeLabel,omitempty"`
+	// OnIdentityError: docs/adr/0049 §6.
+	OnIdentityError bool `json:"onIdentityError,omitempty"`
 }
 
 type RenderedReply struct {
@@ -835,6 +839,7 @@ func renderReply(reply *EventTriggerReply, params map[string]any) (*RenderedRepl
 		if rendered.RemoveLabel, err = RenderEventTemplate(g.RemoveLabel, params); err != nil {
 			return nil, fmt.Errorf("github.removeLabel: %w", err)
 		}
+		rendered.OnIdentityError = g.OnIdentityError
 		out.GitHub = rendered
 	}
 	if h := reply.HTTP; h != nil {

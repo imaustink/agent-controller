@@ -177,6 +177,20 @@ type TurnInput struct {
 	// through the loop unread until then.
 	SenderLogin string `json:"senderLogin,omitempty"`
 
+	// DelegatedSubject is the subject a webhook sender's account is linked
+	// under, as integration-gateway vouched for it in the signed sender
+	// assertion (docs/adr/0049 §5). Set only with SenderSubjectStatus
+	// "linked". A caller-mode agent reads and writes with THIS subject's
+	// links on the sender's behalf; nothing interactive runs under it.
+	// Captured here, in the workflow input, so a resume never re-verifies
+	// the 300 s assertion and decays to the shared subject.
+	DelegatedSubject string `json:"delegatedSubject,omitempty"`
+	// SenderAccountID / SenderSubjectStatus are the rest of the gateway's
+	// claim: the immutable account id, and linked | unlinked | ambiguous |
+	// unavailable. They pick the identity error a refusal reports.
+	SenderAccountID     string `json:"senderAccountId,omitempty"`
+	SenderSubjectStatus string `json:"senderSubjectStatus,omitempty"`
+
 	// CallerTools are tools the consumer supplied in this request and will run
 	// in their own client (ADR 0035), already parsed, validated and ranked by
 	// the gateway. Untrusted text — see internal/callertools.

@@ -179,4 +179,32 @@ describe("K8sSecretIdentityLinkStore.waitForCompletion", () => {
     await expect(waiting).resolves.toEqual(CRED);
     expect(Date.now() - started).toBeLessThan(1_000);
   });
+
+  // docs/adr/0049 §5: a webhook sender resolves to every subject holding a
+  // link for their immutable account id -- by label, never by login.
+  it("finds every subject linked to an account id, and nobody else", async () => {
+    const store = makeStore();
+    const cred = (login: string, accountId?: string) => ({
+      githubLogin: login,
+      token: "gho_x",
+      expiresAt: "2026-07-20T12:00:00.000Z",
+      refreshToken: undefined,
+      refreshExpiresAt: undefined,
+      ...(accountId ? { accountId } : {}),
+    });
+    await store.set("github", "openwebui:alice", cred("alice", "583231"));
+    await store.set("github", "openwebui:alice-laptop", cred("alice", "583231"));
+    // Same LOGIN, different account: a re-registered name must not match.
+    await store.set("github", "openwebui:mallory", cred("alice", "999"));
+    // Linked before account ids were recorded: unresolvable until backfilled.
+    await store.set("github", "openwebui:legacy", cred("alice"));
+
+    expect((await store.findSubjectsByAccount("github", "583231")).sort()).toEqual([
+      "openwebui:alice",
+      "openwebui:alice-laptop",
+    ]);
+    expect(await store.findSubjectsByAccount("github", "999")).toEqual(["openwebui:mallory"]);
+    expect(await store.findSubjectsByAccount("github", "424242")).toEqual([]);
+    expect(await store.findSubjectsByAccount("atlassian", "583231")).toEqual([], "scoped to the provider");
+  });
 });

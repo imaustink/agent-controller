@@ -281,8 +281,16 @@ func shapeInvokeTurn(
 	// this endpoint's token could name an arbitrary login and be handed that
 	// person's credentials.
 	var senderLogin string
+	// sender carries what the gateway vouched for beyond the login (docs/adr/
+	// 0049 §5): the account id and the subject it is linked under. Only ever
+	// from a SIGNED assertion -- an unsigned envelope says nothing about whose
+	// links a run may use.
+	var sender *rbac.SenderClaims
 	if assertionSecret != "" {
-		senderLogin = rbac.VerifySenderAssertion(assertionSecret, assertionHeader, now)
+		sender = rbac.VerifySenderClaims(assertionSecret, assertionHeader, now)
+		if sender != nil {
+			senderLogin = sender.Login
+		}
 	} else if req.Event != nil {
 		if raw, ok := req.Event.Sender["login"].(string); ok {
 			senderLogin = strings.TrimSpace(raw)
@@ -310,6 +318,11 @@ func shapeInvokeTurn(
 		SenderLogin:      senderLogin,
 		IdentityLinkFlow: identityLinkFlow,
 		TargetRepository: strings.TrimSpace(req.TargetRepository),
+	}
+	if sender != nil {
+		turn.SenderAccountID = sender.AccountID
+		turn.SenderSubjectStatus = sender.SubjectStatus
+		turn.DelegatedSubject = sender.Subject
 	}
 
 	// A resolved trigger turn from agent-orchestrator, or a plain turn. The
@@ -440,6 +453,15 @@ func (s *Server) handleInvoke(c *gin.Context) {
 	sessionID := shaped.sessionID
 	if sessionID == "" {
 		sessionID = uuid.NewString()
+	}
+
+	// Accept-phase identity check (docs/adr/0049 §6): a turn whose agent
+	// must act as its webhook sender, who cannot be acted as, is refused here
+	// -- synchronously, so the caller can resolve it -- before anything starts.
+	if ie := s.checkIdentity(c.Request.Context(), turn); ie != nil {
+		log.Printf("/invoke: %s refused for sender %s (%s)", turn.ForcedAgentID, turn.SenderLogin, ie.Code)
+		refuseIdentity(c, ie, shaped.match, sessionID)
+		return
 	}
 	workflowID := "conversation-" + sanitizeID(sessionID)
 	updateID := uuid.NewString()

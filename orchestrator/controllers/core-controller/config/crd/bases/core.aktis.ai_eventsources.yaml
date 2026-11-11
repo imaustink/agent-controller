@@ -80,6 +80,15 @@ spec:
               sender:
                 description: sender identifies who caused a webhook event.
                 properties:
+                  accountIdFrom:
+                    description: |-
+                      accountIdFrom is a CEL expression yielding the sender's IMMUTABLE
+                      provider account id (for GitHub, string(body.sender.id)). The gateway
+                      resolves it to the subject the sender linked their account under, so an
+                      agent in delegated or hybrid identity mode can act as them (docs/adr/
+                      0049 §5). Never the login: a login can be renamed and re-registered.
+                      Unset resolves no sender subject, so such agents get a 403.
+                    type: string
                   dropBots:
                     default: true
                     description: dropBots drops bot-authored events so an agent cannot

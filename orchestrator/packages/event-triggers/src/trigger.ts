@@ -181,6 +181,7 @@ function renderReply(
     if (g.sessionPage) github.sessionPage = true;
     if (g.result) github.result = true;
     if (g.removeLabel) github.removeLabel = renderTemplate(g.removeLabel, params);
+    if (g.onIdentityError) github.onIdentityError = true;
     out.github = github;
   }
   if (spec.http) {

@@ -130,7 +130,11 @@ func TestCallerModesFromASharedSubject(t *testing.T) {
 		require.NoError(t, err, "defaultIdentity=%q", def)
 		if def != "" {
 			require.Equal(t, authz.KindRefused, verdict.Kind, "defaultIdentity=%q", def)
-			require.Contains(t, verdict.Message, "act as the person who asked")
+			// The sender resolved to no subject (this source extracts no
+			// account id), which linking cannot fix: reported as such.
+			require.NotNil(t, verdict.IdentityError)
+			require.Equal(t, authz.CodeIdentityUnavailable, verdict.IdentityError.Code)
+			require.Equal(t, verdict.IdentityError.Message, verdict.Message)
 			require.Zero(t, secrets.calls)
 			continue
 		}

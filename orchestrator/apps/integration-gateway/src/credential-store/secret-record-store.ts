@@ -217,9 +217,9 @@ export class SecretRecordStore {
    * {@link RECORD_KEY_FIELD} cannot be attributed to a subject, and acting on
    * an unattributable credential is worse than leaving it alone.
    */
-  async listRecords(): Promise<Array<{ key: string; fields: Record<string, string> }>> {
+  async listRecords(extraLabels: Record<string, string> = {}): Promise<Array<{ key: string; fields: Record<string, string> }>> {
     if (!this.api.listNamespacedSecret) return [];
-    const selector = Object.entries(this.commonLabels)
+    const selector = Object.entries({ ...this.commonLabels, ...extraLabels })
       .map(([k, v]) => `${k}=${v}`)
       .join(",");
     const page = await this.api.listNamespacedSecret({
@@ -277,12 +277,14 @@ export class SecretRecordStore {
    * ownerReference patch), and create/replace behaves identically on all of
    * them.
    */
-  async put(key: string, fields: Record<string, string>): Promise<void> {
+  async put(key: string, fields: Record<string, string>, extraLabels: Record<string, string> = {}): Promise<void> {
     const name = this.nameFor(key);
     const body = {
       metadata: {
         name,
-        labels: { ...this.commonLabels, [this.keyLabel]: sanitizeLabelValue(key) },
+        // extraLabels are indexes a caller looks records up by without a key
+        // (listRecords' selector); commonLabels and the key label win over them.
+        labels: { ...extraLabels, ...this.commonLabels, [this.keyLabel]: sanitizeLabelValue(key) },
       },
       stringData: { ...fields, [RECORD_KEY_FIELD]: key },
     };

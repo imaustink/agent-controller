@@ -57,4 +57,16 @@ export interface IdentityLinkStore {
    * untouched, which the page tells the user. A no-op when nothing is stored.
    */
   delete(provider: string, subject: string): Promise<void>;
+  /**
+   * Every subject holding a `provider` link for the account with this
+   * immutable provider account id (docs/adr/0049 §5) -- how a webhook sender
+   * is resolved to the subject their links live under.
+   *
+   * Keyed by account id, never login: a login can be renamed and then
+   * re-registered by someone else, and a login index would hand the new owner
+   * the old one's token. Throws on a lookup failure, so a caller can tell
+   * "nobody linked" from "could not tell". Optional: a store without it
+   * resolves nobody, which fails closed.
+   */
+  findSubjectsByAccount?(provider: string, accountId: string): Promise<string[]>;
 }

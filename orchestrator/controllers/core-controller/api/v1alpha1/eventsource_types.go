@@ -123,6 +123,15 @@ type EventSender struct {
 	// +optional
 	RepositoryFrom string `json:"repositoryFrom,omitempty"`
 
+	// accountIdFrom is a CEL expression yielding the sender's IMMUTABLE
+	// provider account id (for GitHub, string(body.sender.id)). The gateway
+	// resolves it to the subject the sender linked their account under, so an
+	// agent in delegated or hybrid identity mode can act as them (docs/adr/
+	// 0049 §5). Never the login: a login can be renamed and re-registered.
+	// Unset resolves no sender subject, so such agents get a 403.
+	// +optional
+	AccountIDFrom string `json:"accountIdFrom,omitempty"`
+
 	// dropBots drops bot-authored events so an agent cannot trigger itself.
 	// +optional
 	// +kubebuilder:default=true

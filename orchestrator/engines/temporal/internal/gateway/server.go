@@ -125,6 +125,7 @@ func (s *Server) Handler() http.Handler {
 	router.GET("/v1/models", s.handleModels)
 	router.POST("/v1/chat/completions", s.handleChatCompletions)
 	router.POST("/invoke", s.handleInvoke)
+	router.POST("/invoke/check", s.handleInvokeCheck)
 	router.GET("/invoke/:id", s.handleInvokeStatus)
 	return router
 }

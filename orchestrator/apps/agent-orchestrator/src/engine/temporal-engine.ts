@@ -41,6 +41,12 @@ import { CALLER_TOOL_ID_PREFIX } from "../caller-tools/types.js";
  * conversation between engines mid-flight would lose that state — which is why
  * the flag is process-wide rather than per-request.
  */
+/** The engine's 403 body for a sender who cannot be acted as (docs/adr/0049 §6). */
+export interface IdentityRefusal {
+  status: "failed";
+  error: { code: string; message: string; [key: string]: unknown };
+}
+
 export interface TemporalEngineOptions {
   /** Base URL of the engine's gateway Service, e.g. `http://temporal-engine-gateway:8080`. */
   baseUrl: string;
@@ -342,6 +348,36 @@ export class TemporalEngine implements AgentGraphLike {
   }
 
   private async start(input: AgentGraphInput, caller: ForwardedCaller | undefined): Promise<string> {
+    const { headers, body } = this.invokeRequest(input, caller);
+    const res = await this.fetchImpl(`${this.baseUrl}/invoke`, { method: "POST", headers, body });
+    if (!res.ok) {
+      throw new Error(`temporal engine /invoke failed: ${res.status}`);
+    }
+    return ((await res.json()) as InvokeAccepted).id;
+  }
+
+  /**
+   * The engine's accept-phase identity check (docs/adr/0049 §6), asked BEFORE
+   * this process accepts a trigger turn -- it answers `202` before the turn
+   * ever reaches the engine, so the engine's own refusal would arrive too late
+   * for the webhook caller to hear it. Same request /invoke would get. Returns
+   * the 403 body, or undefined for no objection, including whenever the check
+   * cannot be made (the turn's own pre-flight still refuses the same way).
+   */
+  async checkIdentity(input: AgentGraphInput): Promise<IdentityRefusal | undefined> {
+    if (input.triggerName && !this.options.senderAssertionSecret) return undefined;
+    const { headers, body } = this.invokeRequest(input, undefined);
+    try {
+      const res = await this.fetchImpl(`${this.baseUrl}/invoke/check`, { method: "POST", headers, body });
+      if (res.status !== 403) return undefined;
+      const parsed = (await res.json()) as IdentityRefusal;
+      return typeof parsed?.error?.code === "string" && typeof parsed.error.message === "string" ? parsed : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private invokeRequest(input: AgentGraphInput, caller: ForwardedCaller | undefined): { headers: Record<string, string>; body: string } {
     const headers = this.headers();
 
     // The sender login travels as a SIGNED assertion, not a body field —
@@ -350,8 +386,13 @@ export class TemporalEngine implements AgentGraphLike {
     // with `mintSenderAssertion`. It selects the caller's principal, and hence
     // which stored credentials the run receives, so an internal hop is exactly
     // as unsuited to trusting it unsigned as an external one.
+    // The gateway's full claim (docs/adr/0049 §5) when there is one -- the
+    // account id and the subject it is linked under, re-signed for this hop.
     if (input.senderLogin && this.options.senderAssertionSecret) {
-      headers[SENDER_ASSERTION_HEADER] = mintSenderAssertion(this.options.senderAssertionSecret, input.senderLogin);
+      headers[SENDER_ASSERTION_HEADER] = mintSenderAssertion(
+        this.options.senderAssertionSecret,
+        input.senderClaims?.login === input.senderLogin ? input.senderClaims : input.senderLogin,
+      );
     }
 
     // This process's OWN per-request identity resolution (OIDC/static/
@@ -409,8 +450,7 @@ export class TemporalEngine implements AgentGraphLike {
       );
     }
 
-    const res = await this.fetchImpl(`${this.baseUrl}/invoke`, {
-      method: "POST",
+    return {
       headers,
       body: JSON.stringify({
         request: input.request,
@@ -458,11 +498,7 @@ export class TemporalEngine implements AgentGraphLike {
             }
           : {}),
       }),
-    });
-    if (!res.ok) {
-      throw new Error(`temporal engine /invoke failed: ${res.status}`);
-    }
-    return ((await res.json()) as InvokeAccepted).id;
+    };
   }
 
   private async poll(id: string, input: AgentGraphInput): Promise<InvokeRecord> {

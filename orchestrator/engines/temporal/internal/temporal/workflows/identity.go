@@ -190,6 +190,11 @@ func authorizeAgent(
 		AllowedIdentities: agent.AllowedIdentities,
 		IdentityOverride:  in.IdentityOverride,
 		TriggerName:       in.TriggerName,
+		// docs/adr/0049 §5: from the turn's own input, never re-verified, so
+		// a resume keeps acting as the same sender.
+		DelegatedSubject:    in.DelegatedSubject,
+		SenderAccountID:     in.SenderAccountID,
+		SenderSubjectStatus: in.SenderSubjectStatus,
 	}
 	var verdict authz.Verdict
 	err := workflow.ExecuteActivity(actx, activities.AuthorizeActivityName, input).Get(ctx, &verdict)

@@ -8,7 +8,21 @@ import {
   type SecretApiLike,
   type WatchLike,
 } from "../credential-store/secret-record-store.js";
+import { createHash } from "node:crypto";
 import type { IdentityLinkStore, LinkedCredential } from "./store.js";
+
+/**
+ * Label indexing a link record by its provider account id (docs/adr/0049 §5).
+ * The value is a hash: account ids are not all valid label values (Atlassian's
+ * contain `:`), and a label is an index, not the record -- the exact
+ * `accountId` field is re-checked on every hit, so a truncated-hash collision
+ * can never resolve the wrong subject.
+ */
+export const ACCOUNT_ID_LABEL = "aktis.ai/account-id";
+
+export function accountIdLabelValue(accountId: string): string {
+  return createHash("sha256").update(accountId).digest("hex").slice(0, 63);
+}
 
 /**
  * Kubernetes-Secret-backed {@link IdentityLinkStore} (docs/adr/0034), replacing
@@ -115,13 +129,24 @@ export class K8sSecretIdentityLinkStore implements IdentityLinkStore {
       // Plaintext like githubLogin: an account id is not secret, and the KB ACL
       // pre-filter and the `/identity` route both read it back.
       if (cred.accountId) fields.accountId = cred.accountId;
-      await this.storeFor(provider).put(subject, fields);
+      await this.storeFor(provider).put(
+        subject,
+        fields,
+        cred.accountId ? { [ACCOUNT_ID_LABEL]: accountIdLabelValue(cred.accountId) } : {},
+      );
     } catch (err) {
       console.error(
         "K8sSecretIdentityLinkStore.set failed (ignored):",
         err instanceof Error ? err.message : String(err),
       );
     }
+  }
+
+  async findSubjectsByAccount(provider: string, accountId: string): Promise<string[]> {
+    if (!accountId) return [];
+    const records = await this.storeFor(provider).listRecords({ [ACCOUNT_ID_LABEL]: accountIdLabelValue(accountId) });
+    // The label is a hashed index; the plaintext field is the answer.
+    return records.filter((r) => r.fields.accountId === accountId).map((r) => r.key);
   }
 
   async waitForCompletion(

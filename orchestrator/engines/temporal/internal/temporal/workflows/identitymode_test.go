@@ -103,3 +103,36 @@ func TestTheTriggersIdentityOverrideReachesThePreflightAndSurvivesAResume(t *tes
 	require.Equal(t, "delegated", le.authorizeInputs[0].IdentityOverride)
 	require.Equal(t, "delegated", le.authorizeInputs[1].IdentityOverride, "the resume keeps the parked turn's override")
 }
+
+// docs/adr/0049 §5: the gateway's sender claims ride the turn's own input into
+// the pre-flight -- never re-verified there, so a resume keeps acting as the
+// same sender after the 300 s assertion has expired.
+func TestTheSendersDelegatedSubjectReachesThePreflight(t *testing.T) {
+	le := newLoopEnv(t)
+	agent := mealPlannerAgent()
+	agent.IdentityProviders = []string{"github"}
+	le.agents = []catalog.AgentDescriptor{agent}
+	le.delegate = activities.DelegateChoice{Kind: activities.DelegateAgent, ID: agent.ID}
+	le.skillTools = recipesSkillTools()
+	le.agentPlans = []activities.PlannedAgentAction{{Action: activities.AgentActionFinish, Message: "done"}}
+	le.resolvedAgent = &agent // a forced agent resolves by id
+
+	var result workflows.TurnResult
+	le.sendTurnInput(t, "turn-1", workflows.TurnInput{
+		Message: "triage", Caller: activities.Caller{Subject: "svc:integration-gateway", Roles: []string{"cook"}},
+		SenderLogin: "alice", ForcedAgentID: agent.ID, TriggerName: "triage",
+		DelegatedSubject: "openwebui:alice", SenderAccountID: "583231", SenderSubjectStatus: "linked",
+	}, &result, time.Millisecond)
+	le.env.ExecuteWorkflow(workflows.ConversationWorkflowName, (*workflows.ConversationState)(nil))
+	require.True(t, le.env.IsWorkflowCompleted())
+	require.NoError(t, le.env.GetWorkflowError())
+
+	require.Len(t, le.authorizeInputs, 1)
+	in := le.authorizeInputs[0]
+	require.Equal(t, "openwebui:alice", in.DelegatedSubject)
+	require.Equal(t, "583231", in.SenderAccountID)
+	require.Equal(t, "linked", in.SenderSubjectStatus)
+	launch := activities.LaunchRecord(in, authz.Verdict{Kind: authz.KindAuthorized})
+	require.Equal(t, "openwebui:alice", launch.DelegatedSubject, "the audit record names whose links the run used")
+	require.Equal(t, "583231", launch.Sender.AccountID)
+}
