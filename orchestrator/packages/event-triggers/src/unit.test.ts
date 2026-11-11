@@ -213,6 +213,15 @@ describe("compileTrigger", () => {
     expect(t.ready).toBe(false);
     expect(t.error).toBeTruthy();
   });
+  // docs/adr/0049
+  it("carries target.identity, and refuses it on a toolRef target", () => {
+    const agent = compileTrigger(trigger("i", { target: { agentRef: "swe", promptTemplate: "p", identity: "delegated" } }));
+    expect(agent.ready).toBe(true);
+    expect(agent.target).toEqual({ kind: "agent", ref: "swe", readOnly: false, promptTemplate: "p", identity: "delegated" });
+    const tool = compileTrigger(trigger("t", { target: { toolRef: "x", identity: "agent" } }));
+    expect(tool.ready).toBe(false);
+    expect(tool.error).toMatch(/identity cannot be set with toolRef/);
+  });
   it("toolRef does not need a promptTemplate", () => {
     expect(compileTrigger(trigger("t", { target: { toolRef: "http-get" } })).ready).toBe(true);
   });

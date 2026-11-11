@@ -118,6 +118,8 @@ export interface EventTriggerTargetSpec {
   toolRef?: string;
   promptTemplate?: string;
   readOnly?: boolean;
+  /** Identity-mode override for the agents this turn launches (docs/adr/0049). */
+  identity?: string;
 }
 
 export interface GitHubReplySpec {
@@ -173,6 +175,12 @@ export interface TriggerTarget {
   ref?: string;
   readOnly: boolean;
   promptTemplate?: string;
+  /**
+   * `target.identity` (docs/adr/0049): the identity mode every agent the turn
+   * authorizes runs in. Can widen what a run reaches, so it is forwarded only
+   * inside a signed dispatch assertion.
+   */
+  identity?: string;
 }
 
 /** `reply` with every template rendered; `issueNumber` parsed to a number. */

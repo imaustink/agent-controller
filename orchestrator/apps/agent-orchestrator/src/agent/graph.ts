@@ -774,6 +774,15 @@ export const AgentStateAnnotation = Annotation.Root({
     reducer: (_current, update) => update,
     default: () => undefined,
   }),
+  /**
+   * The trigger's `target.identity` (docs/adr/0049). Identity modes are a
+   * Temporal-engine feature: carried here only so this engine refuses an
+   * agent launch on such a turn rather than silently ignoring the mode.
+   */
+  identityOverride: Annotation<string | undefined>({
+    reducer: (_current, update) => update,
+    default: () => undefined,
+  }),
 });
 
 export type AgentState = typeof AgentStateAnnotation.State;
@@ -2481,6 +2490,7 @@ export function buildAgentGraph(deps: AgentGraphDeps) {
       // than by reading the node.
       const verdict = await authorization.authorize({
         agent: { id: agent.id, identityProviders: agent.identityProviders, defaultIdentity: agent.defaultIdentity },
+        ...(state.identityOverride ? { identityOverride: state.identityOverride } : {}),
         identity: state.identity,
         request: state.request,
         senderLogin: state.senderLogin,

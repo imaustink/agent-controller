@@ -225,6 +225,12 @@ export interface AgentGraphInput {
    * on a trigger turn, else the session's sticky flag. See `AgentState.readOnly`.
    */
   readOnly?: boolean;
+  /**
+   * The trigger's `target.identity` (docs/adr/0049). Forwarded to the Temporal
+   * engine inside the signed dispatch assertion; the LangGraph engine refuses
+   * any agent launch on a turn that carries it.
+   */
+  identityOverride?: string;
   /** The trigger's params in §4 string form -> `AgentRun.spec.params` of the targeted agent. */
   params?: Record<string, string>;
   /** Name of the EventTrigger that started this turn. */
@@ -314,6 +320,8 @@ interface TriggerTurn {
   toolInput?: string;
   readOnly: boolean;
   params: Record<string, string>;
+  /** `target.identity` (docs/adr/0049); see `AgentGraphInput.identityOverride`. */
+  identity?: string;
 }
 
 export class InvokeServer {
@@ -476,6 +484,7 @@ export class InvokeServer {
       }
       if (trigger.readOnly) input.readOnly = true;
       if (Object.keys(trigger.params).length > 0) input.params = trigger.params;
+      if (trigger.identity) input.identityOverride = trigger.identity;
     }
     // Carried through to every launched ToolRun/AgentRun CR as an annotation
     // (docs/adr/0012) purely for kubectl-level debugging -- independent of
@@ -1017,6 +1026,7 @@ export class InvokeServer {
         ...(target.kind === "tool" ? { forcedToolId: target.ref, toolInput: selection.toolInput } : {}),
         readOnly: target.readOnly,
         params: selection.stringParams,
+        ...(target.identity ? { identity: target.identity } : {}),
       };
       triggerResponse = { name: selection.trigger, sessionId: selection.sessionId, reply: selection.reply };
     }

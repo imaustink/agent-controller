@@ -294,6 +294,10 @@ type PendingLink struct {
 	// chat "done, linked it"), and must not thereby gain write credentials
 	// the original request never had.
 	ReadOnly bool `json:"readOnly,omitempty"`
+	// IdentityOverride is the parked turn's trigger override (docs/adr/0049).
+	// The resume replays Request under it, so a delegated trigger's request
+	// cannot come back as an agent-mode one, or vice versa.
+	IdentityOverride string `json:"identityOverride,omitempty"`
 }
 
 // LinkOwner is the part of a turn's identity that decides whose credentials

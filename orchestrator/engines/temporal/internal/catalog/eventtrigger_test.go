@@ -225,3 +225,15 @@ func TestRunEventTriggerWatchKeepsTheRegistryCurrent(t *testing.T) {
 	cancel()
 	require.NoError(t, <-done)
 }
+
+// docs/adr/0049: same rule as the CRD's admission CEL and @aktis/event-triggers.
+func TestAnIdentityOverrideOnAToolTriggerIsInvalid(t *testing.T) {
+	bad := catalog.NewEventTriggerDescriptor("t", catalog.EventTriggerSpec{
+		Target: catalog.EventTriggerTarget{ToolRef: "http-get", Identity: "agent"},
+	}, true)
+	require.Error(t, bad.Invalid())
+	ok := catalog.NewEventTriggerDescriptor("a", catalog.EventTriggerSpec{
+		Target: catalog.EventTriggerTarget{AgentRef: "swe", PromptTemplate: "p", Identity: "agent"},
+	}, true)
+	require.NoError(t, ok.Invalid())
+}

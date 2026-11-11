@@ -128,6 +128,13 @@ Rules:
   read-only, and a writable trigger sharing that session key (triage on the
   same issue) makes it writable again. A read-only turn is never forwarded
   into an agent run that was launched writable; the turn fails instead.
+- `identity: agent | delegated | hybrid` overrides the identity mode of every
+  agent the turn authorizes, in place of the Agent's `defaultIdentity`
+  ([ADR 0049](adr/0049-configurable-agent-identity-mode.md)). Unlike
+  `readOnly` it can **widen** what a run reaches, so it must be in the Agent's
+  `allowedIdentities` (the trigger is not `Ready` otherwise), it is invalid with
+  `toolRef`, and it is honoured only by the Temporal engine. A turn that parks
+  on an account link resumes under the same override. It is not a session mode.
 - A trigger whose CEL fails to compile is `Ready=False` and never matches.
 
 ## 2. The envelope
@@ -218,7 +225,7 @@ engine modes) and on the Temporal gateway (for direct callers). Request:
 
 An event is always matched against the registry. Dispatch is never taken from
 the body: `forcedSkillId`, `forcedAgentId`, `forcedToolId`, `toolInput`,
-`params` and `triggerName` in an `/invoke` body are ignored by
+`params`, `triggerName` and `identity` in an `/invoke` body are ignored by
 agent-orchestrator and refused with `400` by the Temporal gateway. The Temporal
 gateway honours a body `readOnly: true`, which can only restrict.
 
@@ -228,7 +235,7 @@ envelope. Body: `request` (rendered prompt), `sessionId`, `readOnly` (only
 travels in the signed `x-orchestrator-dispatch-assertion` header, an
 HMAC-SHA256 `<payload>.<signature>` under the sender-assertion secret with
 payload `{typ:"dispatch", triggerName, forcedSkillId | forcedAgentId |
-forcedToolId, toolInput, readOnly, params, sessionId, requestSha256, exp}`.
+forcedToolId, toolInput, readOnly, params, identity, sessionId, requestSha256, exp}`.
 It is bound to the turn's session and prompt and expires after 300 s. The
 gateway refuses (`400`) an invalid, expired or mis-bound assertion and one sent
 with an `event`. Without the secret, agent-orchestrator fails a Temporal-mode
