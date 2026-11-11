@@ -56,6 +56,7 @@ spec:
               drop: ["ALL"]
           env:
             {{- include "temporal-engine.temporalEnv" . | nindent 12 }}
+            {{- include "temporal-engine.otelEnv" (merge (dict "serviceName" "temporal-engine-gateway") .) | nindent 12 }}
             - name: GATEWAY_ADDR
               value: ":8080"
             {{/*

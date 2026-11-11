@@ -22,6 +22,7 @@ import (
 	"github.com/aktisai/orchestrator/engines/temporal/internal/kubeconfig"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/llm"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/rbac"
+	"github.com/aktisai/orchestrator/engines/temporal/internal/telemetry"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/temporal"
 )
 
@@ -32,6 +33,13 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	shutdownTracing := telemetry.Setup(ctx, "temporal-engine-gateway")
+	defer func() {
+		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTracing(sctx)
+	}()
 
 	cfg := temporal.ConfigFromEnv()
 	listenAddr := os.Getenv("GATEWAY_ADDR")

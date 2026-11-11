@@ -1,0 +1,155 @@
+{{- if .Values.global.observability.enabled }}
+{{- /*
+In-cluster OpenTelemetry Collector (docs/adr/0050 §2): every emitter sends
+OTLP here, and it is the only thing that holds Langfuse keys or has egress to
+it -- no agent pod ever does. Sampling, batching, redaction and fan-out are
+this config, not code.
+*/ -}}
+{{- $endpoint := include "agent-controller.langfuseEndpoint" . }}
+{{- $name := printf "%s-otel-collector" .Release.Name }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  config.yaml: |
+    extensions:
+      health_check: {}
+      {{- if $endpoint }}
+      basicauth/langfuse:
+        client_auth:
+          username: ${env:LANGFUSE_PUBLIC_KEY}
+          password: ${env:LANGFUSE_SECRET_KEY}
+      {{- end }}
+    receivers:
+      otlp:
+        protocols:
+          http: { endpoint: 0.0.0.0:4318 }
+          grpc: { endpoint: 0.0.0.0:4317 }
+    processors:
+      # Bounded: the collector must never be what slows or fails a turn, and
+      # an unreachable backend loses traces, nothing else.
+      memory_limiter: { check_interval: 1s, limit_percentage: 80, spike_limit_percentage: 20 }
+      batch: {}
+      # Never-captured, at any content level (docs/adr/0050 §5): credentials
+      # and identity assertions are dropped by key wherever they appear.
+      attributes/redact:
+        actions:
+          {{- range list "authorization" "http.request.header.authorization" "http.request.header.x-gateway-user-assertion" "http.request.header.x-gateway-caller-identity" "http.request.header.x-orchestrator-dispatch-assertion" "http.request.header.cookie" }}
+          - { key: {{ . | quote }}, action: delete }
+          {{- end }}
+          # Credential-shaped keys only: a bare "token" would also match
+          # gen_ai.usage.*_tokens, which the trace exists to carry.
+          - { pattern: "(?i).*(access[_-]?token|refresh[_-]?token|id[_-]?token|bearer|secret|password|credential|api[_-]?key|private[_-]?key).*", action: delete }
+    exporters:
+      {{- if $endpoint }}
+      otlphttp/langfuse:
+        endpoint: {{ printf "%s/api/public/otel" $endpoint | quote }}
+        auth: { authenticator: basicauth/langfuse }
+        sending_queue: { enabled: true, queue_size: 2048 }
+        retry_on_failure: { enabled: true, max_elapsed_time: 60s }
+      {{- end }}
+      {{- range $exporter, $cfg := .Values.observability.extraExporters }}
+      otlphttp/{{ $exporter }}:
+        {{- toYaml $cfg | nindent 8 }}
+      {{- end }}
+    service:
+      extensions:
+        - health_check
+        {{- if $endpoint }}
+        - basicauth/langfuse
+        {{- end }}
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, attributes/redact, batch]
+          exporters:
+            {{- if $endpoint }}
+            - otlphttp/langfuse
+            {{- end }}
+            {{- range $exporter, $_ := .Values.observability.extraExporters }}
+            - otlphttp/{{ $exporter }}
+            {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.observability.collector.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otel-collector
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: otel-collector
+        app.kubernetes.io/instance: {{ .Release.Name }}
+      annotations:
+        checksum/config: {{ toYaml .Values.observability | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: collector
+          image: {{ .Values.observability.collector.image }}
+          args: ["--config=/conf/config.yaml"]
+          ports:
+            - { name: otlp-http, containerPort: 4318 }
+            - { name: otlp-grpc, containerPort: 4317 }
+            - { name: health, containerPort: 13133 }
+          {{- if $endpoint }}
+          env:
+            - name: LANGFUSE_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.observability.langfuse.keysSecretRef.name }}
+                  key: {{ .Values.observability.langfuse.keysSecretRef.publicKey }}
+            - name: LANGFUSE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.observability.langfuse.keysSecretRef.name }}
+                  key: {{ .Values.observability.langfuse.keysSecretRef.secretKey }}
+          {{- end }}
+          readinessProbe:
+            httpGet: { path: /, port: health }
+          resources:
+            {{- toYaml .Values.observability.collector.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: config, mountPath: /conf }
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  selector:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - { name: otlp-http, port: 4318, targetPort: otlp-http }
+    - { name: otlp-grpc, port: 4317, targetPort: otlp-grpc }
+{{- end }}
