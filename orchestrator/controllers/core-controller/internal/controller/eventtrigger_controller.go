@@ -176,6 +176,15 @@ func (r *EventTriggerReconciler) check(ctx context.Context, trigger *corev1alpha
 	if !ok {
 		return "TargetNotFound", fmt.Sprintf("target %s %q does not exist", kind, name), nil
 	}
+	// An identity override must be one the targeted Agent allows
+	// (docs/adr/0049). Checked here so a bad trigger fails when applied, not
+	// on its first event. An orchestrator or skill target's agent is chosen
+	// later, so the engine's pre-flight is the check for those.
+	if agent, isAgent := obj.(*corev1alpha1.Agent); isAgent && target.Identity != "" {
+		if allowed := agent.Spec.AllowedIdentities; len(allowed) > 0 && !slices.Contains(allowed, target.Identity) {
+			return "IdentityNotAllowed", fmt.Sprintf("identity %q is not in Agent %q's allowedIdentities %v", target.Identity, name, allowed), nil
+		}
+	}
 	return "", "", nil
 }
 

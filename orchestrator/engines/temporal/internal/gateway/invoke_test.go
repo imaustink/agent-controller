@@ -180,6 +180,9 @@ func TestShapeInvokeTurnRefusesDispatchInTheBody(t *testing.T) {
 		{"tool input", invokeRequest{Request: "x", ToolInput: "i"}},
 		{"params", invokeRequest{Request: "x", Params: map[string]string{"a": "b"}}},
 		{"trigger name", invokeRequest{Request: "x", TriggerName: "github-issue-triage"}},
+		// docs/adr/0049: an identity override can widen a run's reach.
+		{"identity", invokeRequest{Request: "x", Identity: "agent"}},
+		{"event plus identity", invokeRequest{Event: prEnvelope("ai-review"), Identity: "agent"}},
 		// The finding's exact shape: an event plus a forced writable agent.
 		{"event plus forced agent", invokeRequest{Event: prEnvelope("ai-review"), ForcedAgentID: "claude-code-swe-agent"}},
 		{"event plus trigger name", invokeRequest{Event: prEnvelope("ai-review"), TriggerName: "writable"}},
@@ -652,4 +655,29 @@ func TestToolCallsPayloadShape(t *testing.T) {
 	// Index is how a streaming client assembles more than one call.
 	require.Equal(t, 0, payload[0].Index)
 	require.Equal(t, 1, payload[1].Index)
+}
+
+// docs/adr/0049: the trigger's identity override reaches the turn from a
+// signed dispatch (agent-orchestrator's matched trigger) and from a trigger
+// matched here (a direct caller), and from nowhere else.
+func TestShapeInvokeTurnCarriesTheTriggersIdentityOverride(t *testing.T) {
+	now := time.Now()
+	d := rbac.Dispatch{TriggerName: "triage-as-sender", ForcedAgentID: "claude-code-swe-agent", Identity: "delegated"}
+	shaped, err := shapeInvokeTurn(invokeRequest{Request: "triage #1", SessionID: "s"},
+		"", signedDispatch(d, "s", "triage #1", now), assertionSecret, reviewTriggers(t), testCaller, now)
+	require.NoError(t, err)
+	require.Equal(t, "delegated", shaped.turn.IdentityOverride)
+
+	// Unsigned, the same turn carries no override.
+	plain, err := shapeInvokeTurn(invokeRequest{Request: "triage #1", SessionID: "s"}, "", "", assertionSecret, reviewTriggers(t), testCaller, now)
+	require.NoError(t, err)
+	require.Empty(t, plain.turn.IdentityOverride)
+
+	reg := catalog.NewEventTriggerRegistry()
+	reg.Upsert(catalog.NewEventTriggerDescriptor("review-as-agent", catalog.EventTriggerSpec{
+		Target: catalog.EventTriggerTarget{AgentRef: "claude-code-swe-agent", PromptTemplate: "review", Identity: "agent"},
+	}, true))
+	matched, err := shapeInvokeTurn(invokeRequest{Event: prEnvelope("ai-review")}, "", "", "", reg, testCaller, now)
+	require.NoError(t, err)
+	require.Equal(t, "agent", matched.turn.IdentityOverride)
 }

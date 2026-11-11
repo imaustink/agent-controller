@@ -80,6 +80,11 @@ type invokeRequest struct {
 	// never a trigger turn's own mode: that comes from the trigger.
 	ReadOnly bool `json:"readOnly,omitempty"`
 
+	// Identity is refused when set: an identity override can widen what a run
+	// reaches (docs/adr/0049), so it comes only from a trigger matched here
+	// or a verified rbac.DispatchAssertionHeader.
+	Identity string `json:"identity,omitempty"`
+
 	// CallerTools / CallerToolRequired carry a chat turn's caller-supplied
 	// tools (ADR 0035) across this hop, already parsed, validated and ranked
 	// by agent-orchestrator's own handleChat before it ever calls
@@ -258,7 +263,7 @@ func shapeInvokeTurn(
 		return shapedInvoke{}, errNotAnEnvelope
 	}
 	if req.ForcedSkillID != "" || req.ForcedAgentID != "" || req.ForcedToolID != "" ||
-		req.ToolInput != "" || len(req.Params) > 0 || req.TriggerName != "" {
+		req.ToolInput != "" || len(req.Params) > 0 || req.TriggerName != "" || req.Identity != "" {
 		return shapedInvoke{}, errBodyDispatch
 	}
 	if req.Event != nil && dispatchHeader != "" {
@@ -338,6 +343,7 @@ func shapeInvokeTurn(
 			turn.ReadOnly = d.ReadOnly || req.ReadOnly
 			turn.Params = d.Params
 			turn.TriggerName = d.TriggerName
+			turn.IdentityOverride = d.Identity
 		}
 		// A forced tool's input is ToolInput, so its prompt may legitimately
 		// be empty (a toolRef trigger needs no promptTemplate). Anything else
@@ -376,6 +382,7 @@ func shapeInvokeTurn(
 	turn.ReadOnly = target.ReadOnly || req.ReadOnly
 	turn.Params = m.StringParams
 	turn.TriggerName = m.Trigger.Name
+	turn.IdentityOverride = target.Identity
 	// The repository the source's sender was verified on (§2 repositoryFrom)
 	// — never one read out of the prompt.
 	if turn.TargetRepository == "" {

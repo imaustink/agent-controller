@@ -148,6 +148,24 @@ describe("TemporalEngine", () => {
     });
   });
 
+  // docs/adr/0049: an identity override can widen a run's reach, so it rides
+  // only inside the signed dispatch -- never the body the engine refuses it in.
+  it("signs a trigger's identity override into the dispatch, never the body", async () => {
+    const { impl, calls } = scriptedFetch([{ id: "x", status: "succeeded", result: "ok" }]);
+    const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl, senderAssertionSecret: ASSERTION_SECRET });
+
+    await engine.invoke(
+      input({ request: "triage", sessionId: "s", forcedAgentId: "swe", triggerName: "t", identityOverride: "delegated" }),
+    );
+
+    const init = calls[0]!.init!;
+    const body = JSON.parse(String(init.body));
+    expect(body).not.toHaveProperty("identity");
+    expect(body).not.toHaveProperty("identityOverride");
+    const [payloadB64] = (init.headers as Record<string, string>)[DISPATCH_ASSERTION_HEADER]!.split(".");
+    expect(JSON.parse(Buffer.from(payloadB64!, "base64url").toString("utf8"))).toMatchObject({ identity: "delegated" });
+  });
+
   // A trigger turn the engine can only accept signed: without the secret it
   // must fail here, not run as an undispatched chat turn.
   it("refuses an event-triggered turn when there is no secret to sign its dispatch", async () => {

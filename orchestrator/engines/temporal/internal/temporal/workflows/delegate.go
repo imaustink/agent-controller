@@ -75,6 +75,7 @@ func delegateToAgent(ctx workflow.Context, actx workflow.Context, state *Convers
 			// it" and the user's actual request is lost.
 			anchor.Request = in.Message
 			anchor.ReadOnly = in.ReadOnly
+			anchor.IdentityOverride = in.IdentityOverride
 			anchor.RequestedBy = &authz.LinkOwner{
 				Subject:     in.Caller.Subject,
 				PerUser:     in.Caller.PerUser,

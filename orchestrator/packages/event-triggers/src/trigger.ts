@@ -93,6 +93,10 @@ function resolveTarget(resource: EventTriggerResource): TriggerTarget | string {
   const target: TriggerTarget = { kind, readOnly: t.readOnly === true };
   if (ref !== undefined) target.ref = ref;
   if (t.promptTemplate) target.promptTemplate = t.promptTemplate;
+  if (t.identity) {
+    if (kind === "tool") return "spec.target.identity cannot be set with toolRef";
+    target.identity = t.identity;
+  }
   return target;
 }
 

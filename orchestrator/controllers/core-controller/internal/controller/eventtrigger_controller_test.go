@@ -278,6 +278,39 @@ var _ = Describe("EventTrigger Controller", func() {
 		Expect(readyAfterReconcile(skill).Reason).To(Equal("TargetNotFound"))
 	})
 
+	It("is IdentityNotAllowed when its identity override is outside the Agent's allowedIdentities (docs/adr/0049)", func() {
+		var agent corev1alpha1.Agent
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: agentName, Namespace: "default"}, &agent)).To(Succeed())
+		agent.Spec.AllowedIdentities = []corev1alpha1.IdentityMode{corev1alpha1.IdentityModeHybrid}
+		Expect(k8sClient.Update(ctx, &agent)).To(Succeed())
+
+		denied := validTrigger("identity-denied")
+		denied.Spec.Target.Identity = corev1alpha1.IdentityModeAgent
+		cond := readyAfterReconcile(denied)
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal("IdentityNotAllowed"))
+
+		// The allowed mode on the same Agent is Ready: the check can fail
+		// only for the override, not for the trigger's shape.
+		allowed := validTrigger("identity-allowed")
+		allowed.Spec.Target.Identity = corev1alpha1.IdentityModeHybrid
+		Expect(readyAfterReconcile(allowed).Status).To(Equal(metav1.ConditionTrue))
+	})
+
+	It("is Ready with any identity override when the Agent sets no allowedIdentities", func() {
+		trigger := validTrigger("identity-unrestricted")
+		trigger.Spec.Target.Identity = corev1alpha1.IdentityModeDelegated
+		Expect(readyAfterReconcile(trigger).Status).To(Equal(metav1.ConditionTrue))
+	})
+
+	It("rejects an identity override on a toolRef target at admission", func() {
+		trigger := validTrigger("identity-on-tool")
+		trigger.Spec.Target = corev1alpha1.EventTriggerTarget{ToolRef: toolName, Identity: corev1alpha1.IdentityModeAgent}
+		err := k8sClient.Create(ctx, trigger)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("cannot be set with toolRef"))
+	})
+
 	It("maps a referenced resource back to the triggers naming it", func() {
 		r := &EventTriggerReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 		named := validTrigger("maps-named")

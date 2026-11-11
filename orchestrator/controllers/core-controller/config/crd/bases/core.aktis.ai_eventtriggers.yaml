@@ -145,6 +145,18 @@ spec:
                     description: agentRef dispatches an Agent CR (same namespace)
                       as a subagent.
                     type: string
+                  identity:
+                    description: |-
+                      identity overrides the identity mode of every agent this turn
+                      authorizes (docs/adr/0049): agent, delegated or hybrid, in place of the
+                      Agent's defaultIdentity. Unlike readOnly it can widen what a run
+                      reaches, so it travels only inside the signed dispatch assertion and
+                      must be in the Agent's allowedIdentities. Temporal engine only.
+                    enum:
+                    - agent
+                    - delegated
+                    - hybrid
+                    type: string
                   orchestrator:
                     description: orchestrator runs a conversational turn on the rendered
                       prompt.
@@ -173,6 +185,8 @@ spec:
                 - message: promptTemplate is required unless toolRef is set
                   rule: has(self.toolRef) || (has(self.promptTemplate) && size(self.promptTemplate)
                     > 0)
+                - message: identity applies to agent runs; it cannot be set with toolRef
+                  rule: '!has(self.identity) || !has(self.toolRef)'
             required:
             - target
             type: object

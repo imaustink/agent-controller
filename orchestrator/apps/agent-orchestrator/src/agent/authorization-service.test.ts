@@ -1202,6 +1202,18 @@ describe("AuthorizationService.authorize -- identity modes are Temporal-only (do
     expect(github.getToken).not.toHaveBeenCalled();
   });
 
+  it("refuses a turn whose EventTrigger sets identity, on an agent with no mode of its own", async () => {
+    const svc = new AuthorizationService({});
+    const verdict = await svc.authorize({
+      agent: { id: "plain" },
+      identity: identity(),
+      request: "r",
+      identityOverride: "agent",
+    });
+    if (verdict.kind !== "misconfigured") throw new Error(verdict.kind);
+    expect(verdict.error).toContain("EventTrigger sets identity");
+  });
+
   // A shared subject's github link would be every sender's GitHub identity.
   // The per-user case alongside is what proves the assertion can fail.
   it("never resolves a github token for a shared subject", async () => {

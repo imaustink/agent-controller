@@ -161,6 +161,13 @@ type TurnInput struct {
 	// only from a matched trigger, never from a request body.
 	TriggerName string `json:"triggerName,omitempty"`
 
+	// IdentityOverride is the matched trigger's target.identity (docs/adr/
+	// 0049): the identity mode every agent this turn authorizes runs in, in
+	// place of the Agent's defaultIdentity. Set only from a matched trigger
+	// or a verified dispatch assertion, never from a request body: unlike
+	// ReadOnly it can widen what a run reaches.
+	IdentityOverride string `json:"identityOverride,omitempty"`
+
 	// SenderLogin is the human an adapter vouched for, taken from a verified
 	// sender assertion (upstream ADR 0030 §6) — the gateway authenticates as
 	// itself, so the caller's own subject says nothing about who triggered

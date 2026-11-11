@@ -126,6 +126,9 @@ func resumePendingLink(
 	// Read-only is sticky across the resume: replaying a read-only request on
 	// an ordinary turn must not launch it with write credentials.
 	resume.ReadOnly = resume.ReadOnly || anchor.ReadOnly
+	// The resume replays the parked request under the identity mode it was
+	// parked with, not whatever the noticing turn carries.
+	resume.IdentityOverride = anchor.IdentityOverride
 	note("Checking whether your " + anchor.Provider + " link completed…")
 
 	reply, m, err = delegateToAgent(ctx, actx, state, resume, *agent, meta, note, anchor)
@@ -185,6 +188,7 @@ func authorizeAgent(
 		// override from the signed dispatch assertion.
 		DefaultIdentity:   agent.DefaultIdentity,
 		AllowedIdentities: agent.AllowedIdentities,
+		IdentityOverride:  in.IdentityOverride,
 		TriggerName:       in.TriggerName,
 	}
 	var verdict authz.Verdict

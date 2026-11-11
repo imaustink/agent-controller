@@ -35,6 +35,7 @@ type OrchestratorTarget struct{}
 // EventTriggerTarget is exactly one of orchestrator/skillRef/agentRef/toolRef.
 // +kubebuilder:validation:XValidation:rule="(has(self.orchestrator)?1:0)+(has(self.skillRef)?1:0)+(has(self.agentRef)?1:0)+(has(self.toolRef)?1:0)==1",message="exactly one of orchestrator, skillRef, agentRef or toolRef must be set"
 // +kubebuilder:validation:XValidation:rule="has(self.toolRef) || (has(self.promptTemplate) && size(self.promptTemplate) > 0)",message="promptTemplate is required unless toolRef is set"
+// +kubebuilder:validation:XValidation:rule="!has(self.identity) || !has(self.toolRef)",message="identity applies to agent runs; it cannot be set with toolRef"
 type EventTriggerTarget struct {
 	// orchestrator runs a conversational turn on the rendered prompt.
 	// +optional
@@ -61,6 +62,14 @@ type EventTriggerTarget struct {
 	// suppresses write credentials. It can only restrict.
 	// +optional
 	ReadOnly bool `json:"readOnly,omitempty"`
+
+	// identity overrides the identity mode of every agent this turn
+	// authorizes (docs/adr/0049): agent, delegated or hybrid, in place of the
+	// Agent's defaultIdentity. Unlike readOnly it can widen what a run
+	// reaches, so it travels only inside the signed dispatch assertion and
+	// must be in the Agent's allowedIdentities. Temporal engine only.
+	// +optional
+	Identity IdentityMode `json:"identity,omitempty"`
 }
 
 // GitHubReply posts to an issue or pull request. Every string is a

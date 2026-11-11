@@ -49,6 +49,9 @@ type EventTriggerTarget struct {
 	ToolRef        string    `json:"toolRef,omitempty"`
 	PromptTemplate string    `json:"promptTemplate,omitempty"`
 	ReadOnly       bool      `json:"readOnly,omitempty"`
+	// Identity overrides the identity mode of every agent the turn
+	// authorizes (docs/adr/0049); see authz.ResolveMode.
+	Identity string `json:"identity,omitempty"`
 }
 
 type EventSecretKeySelector struct {
@@ -510,6 +513,10 @@ func (d *EventTriggerDescriptor) compile() error {
 	}
 	if d.Spec.Target.ToolRef == "" && strings.TrimSpace(d.Spec.Target.PromptTemplate) == "" {
 		return fmt.Errorf("promptTemplate is required unless toolRef is set")
+	}
+	// Identity modes apply to agent runs; a tool has none (docs/adr/0049).
+	if d.Spec.Target.ToolRef != "" && d.Spec.Target.Identity != "" {
+		return fmt.Errorf("identity cannot be set with toolRef")
 	}
 
 	if expr := strings.TrimSpace(d.Spec.Match.CEL); expr != "" {

@@ -25,6 +25,8 @@ export interface Dispatch {
   toolInput?: string;
   readOnly?: boolean;
   params?: Record<string, string>;
+  /** The trigger's identity override (docs/adr/0049); can widen, so signed only. */
+  identity?: string;
 }
 
 /** Hex SHA-256 of a turn's request text, as bound into the assertion. */

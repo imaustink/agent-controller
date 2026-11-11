@@ -166,6 +166,8 @@ export interface PendingIdentityLink {
 export interface AuthorizationRequest {
   /** The Agent about to be launched: its id and the providers it declares. */
   agent: { id: string; identityProviders?: string[]; defaultIdentity?: string };
+  /** The trigger's `target.identity` (docs/adr/0049); refused here like `defaultIdentity`. */
+  identityOverride?: string;
   /** The resolved caller (subject, principal, roles). */
   identity: Identity;
   /** This turn's request text, captured onto a parked link so the resume re-delegates THIS goal. */
@@ -372,13 +374,13 @@ export class AuthorizationService {
     // chose a mode rather than silently running it as whatever inference
     // happens to produce here -- which, for `agent` vs `hybrid`, would hand
     // the run a different credential than its operator chose.
-    if (agent.defaultIdentity) {
-      this.logVerdict("misconfigured", agent.id, { defaultIdentity: agent.defaultIdentity, reason: "temporal-only" });
+    const mode = req.identityOverride ?? agent.defaultIdentity;
+    if (mode) {
+      const where = req.identityOverride ? "this turn's EventTrigger sets identity" : `agent ${agent.id} sets defaultIdentity`;
+      this.logVerdict("misconfigured", agent.id, { identityMode: mode, reason: "temporal-only" });
       return {
         kind: "misconfigured",
-        error:
-          `agent ${agent.id} sets defaultIdentity "${agent.defaultIdentity}", which needs the Temporal engine ` +
-          "(AGENT_ENGINE=temporal); this engine does not implement identity modes",
+        error: `${where} "${mode}", which needs the Temporal engine (AGENT_ENGINE=temporal); this engine does not implement identity modes`,
       };
     }
     const catalog = this.catalog();
