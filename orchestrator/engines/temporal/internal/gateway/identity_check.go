@@ -8,6 +8,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"go.temporal.io/sdk/client"
 
 	"github.com/aktisai/orchestrator/engines/temporal/internal/authz"
@@ -70,6 +73,20 @@ func (s *Server) checkIdentity(ctx context.Context, turn workflows.TurnInput) *a
 }
 
 func refuseIdentity(c *gin.Context, ie *authz.IdentityError, match *catalog.TriggerMatch, sessionID string) {
+	// docs/adr/0050 §4: a refused delivery is a short trace ending in an
+	// error span carrying the code, so "how often do senders hit the link
+	// wall" is a query, not log archaeology.
+	span := trace.SpanFromContext(c.Request.Context())
+	span.SetStatus(codes.Error, ie.Code)
+	attrs := []attribute.KeyValue{attribute.String("aktis.identity_error", ie.Code)}
+	if ie.Target != nil {
+		attrs = append(attrs, attribute.String("aktis.agent", ie.Target.Name))
+	}
+	if ie.Sender != nil {
+		attrs = append(attrs, attribute.String("aktis.sender", ie.Sender.Provider+":"+ie.Sender.Login))
+	}
+	span.SetAttributes(attrs...)
+
 	body := identityRefusal{Status: invokeStatusFailed, Error: identityErrorReply{IdentityError: ie}}
 	if match != nil {
 		body.Error.Trigger = &invokeTrigger{Name: match.Trigger.Name, SessionID: sessionID, Reply: match.Reply}

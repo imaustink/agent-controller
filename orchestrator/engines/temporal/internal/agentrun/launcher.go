@@ -181,6 +181,8 @@ func launchSpec(l audit.Launch) map[string]any {
 	set("requestedIdentityMode", l.RequestedIdentityMode)
 	set("identityModeSource", l.IdentityModeSource)
 	set("targetRepository", l.TargetRepository)
+	set("traceId", l.TraceID)
+	set("traceparent", l.Traceparent)
 	if l.Sender != nil {
 		sender := map[string]any{}
 		for k, v := range map[string]string{"provider": l.Sender.Provider, "login": l.Sender.Login, "accountId": l.Sender.AccountID} {

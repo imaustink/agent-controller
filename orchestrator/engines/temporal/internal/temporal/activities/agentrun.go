@@ -115,6 +115,7 @@ func (a *AgentRunActivities) LaunchAgentRun(ctx context.Context, in LaunchAgentR
 		return err
 	}
 	if in.Launch.DecisionID != "" {
+		annotateIdentity(ctx, in.Launch, in.WorkflowID)
 		// Joined to its agent-authorization record by decisionId. A retry
 		// after a successful create can repeat this line; both copies are
 		// identical and name the same agentRun.

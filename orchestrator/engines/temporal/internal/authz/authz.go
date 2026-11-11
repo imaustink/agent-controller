@@ -366,6 +366,11 @@ type Verdict struct {
 	// DecisionID names this decision in the audit trail. Set by the activity
 	// that ran it, never by this package.
 	DecisionID string `json:"decisionId,omitempty"`
+	// TraceID / Traceparent are the trace the decision ran in (docs/adr/0050
+	// §1), set by the activity alongside DecisionID: the audit record's join
+	// to its trace, and the context the launched run continues.
+	TraceID     string `json:"traceId,omitempty"`
+	Traceparent string `json:"traceparent,omitempty"`
 
 	// --- link-required ---
 

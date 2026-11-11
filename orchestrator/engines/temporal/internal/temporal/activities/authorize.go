@@ -106,14 +106,17 @@ func (a *AuthorizeActivities) Authorize(ctx context.Context, in AuthorizeInput) 
 		return v, err
 	}
 	v.DecisionID = decisionID(ctx)
-	annotatePreflightSpan(ctx, in, v)
+	v.TraceID, v.Traceparent = traceOf(ctx)
 	info := activity.GetInfo(ctx)
+	launch := LaunchRecord(in, v)
+	annotatePreflightSpan(ctx, in, v)
+	annotateIdentity(ctx, launch, info.WorkflowExecution.ID)
 	audit.Emit(audit.Record{
 		Kind:         audit.KindAuthorization,
 		Agent:        in.AgentID,
 		Outcome:      string(v.Kind),
 		Conversation: info.WorkflowExecution.ID,
-		Launch:       LaunchRecord(in, v),
+		Launch:       launch,
 	})
 	return v, nil
 }
@@ -141,6 +144,8 @@ func LaunchRecord(in AuthorizeInput, v authz.Verdict) audit.Launch {
 		IdentityModeSource:    string(v.IdentityModeSource),
 		TargetRepository:      in.TargetRepository,
 		ReadOnly:              in.ReadOnly,
+		TraceID:               v.TraceID,
+		Traceparent:           v.Traceparent,
 	}
 	if in.SenderLogin != "" {
 		l.Sender = &audit.Sender{Provider: "github", Login: in.SenderLogin, AccountID: in.SenderAccountID}

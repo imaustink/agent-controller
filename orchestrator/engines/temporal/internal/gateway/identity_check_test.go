@@ -12,6 +12,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.temporal.io/sdk/client"
 
 	"github.com/aktisai/orchestrator/engines/temporal/internal/authz"
@@ -121,4 +125,22 @@ func TestInvokeRefusesAnUnresolvableSenderBeforeStartingTheTurn(t *testing.T) {
 	rec := postCheck(t, s, "/invoke", rbac.SenderClaims{Login: "alice", SubjectStatus: rbac.SenderSubjectUnlinked})
 	require.Equal(t, http.StatusForbidden, rec.Code)
 	require.Contains(t, rec.Body.String(), authz.CodeIdentityLinkRequired)
+}
+
+// docs/adr/0050 §4: the refused request's span ends in error with the code.
+func TestARefusedDeliveryEndsInAnErrorSpan(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)))
+	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+
+	s := NewServer(&identityCheckClient{answer: &authz.IdentityError{
+		Code: authz.CodeIdentityLinkRequired, Message: "m", Target: &authz.IdentityTarget{Kind: "agent", Name: "swe"},
+	}}, "q", nil, WithSenderAssertionSecret(assertionSecret))
+	require.Equal(t, http.StatusForbidden, postCheck(t, s, "/invoke/check", rbac.SenderClaims{Login: "alice", SubjectStatus: rbac.SenderSubjectUnlinked}).Code)
+
+	spans := rec.Ended()
+	require.Len(t, spans, 1)
+	require.Equal(t, codes.Error, spans[0].Status().Code)
+	require.Equal(t, authz.CodeIdentityLinkRequired, spans[0].Status().Description)
 }

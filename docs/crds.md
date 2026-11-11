@@ -189,7 +189,7 @@ mirrors `Tool` so agents join the same RBAC-scoped retrieval
 natural-language `goal` and the target is an `Agent`.
 
 - **Authored by:** system — created by the orchestrator (or another caller).
-- **Key spec fields:** `agentRef` (**required**), `goal` (string, **required**), `callback` (**required**, reuses the ToolRun HMAC/NATS protocol), `secretEnv` (merged over the Agent's), `timeoutSeconds`, `readOnly` (`AGENT_READ_ONLY`), `params` (`AGENT_PARAMS`), `identityMode` (`AGENT_IDENTITY_MODE`: the mode the engine decided, describing the credentials actually given), `launch` (immutable launch audit record: entry point, launcher, sender, trigger, requested mode and source, per-provider read/write credential owner, target repository; [ADR 0049](adr/0049-configurable-agent-identity-mode.md) §3).
+- **Key spec fields:** `agentRef` (**required**), `goal` (string, **required**), `callback` (**required**, reuses the ToolRun HMAC/NATS protocol), `secretEnv` (merged over the Agent's), `timeoutSeconds`, `readOnly` (`AGENT_READ_ONLY`), `params` (`AGENT_PARAMS`), `identityMode` (`AGENT_IDENTITY_MODE`: the mode the engine decided, describing the credentials actually given), `launch` (immutable launch audit record: entry point, launcher, sender, trigger, requested mode and source, per-provider read/write credential owner, target repository, and the `traceId`/`traceparent` of the launching turn; [ADR 0049](adr/0049-configurable-agent-identity-mode.md) §3, [ADR 0050](adr/0050-agent-observability-with-langfuse.md) §1).
 - **Status:** same shape as `ToolRun` — `phase`, `jobName`, timings, `message`, `conditions`.
 - **Acted on by:** `agentrun_controller.go` (owns a `batch/v1` Job).
 - **Sample:** `config/samples/tool_v1alpha1_agentrun.yaml`.
