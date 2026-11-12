@@ -33,7 +33,7 @@ import type {
 } from "./orchestrator-client.js";
 import { parseAcceptedTrigger } from "./orchestrator-client.js";
 import type { SenderClaims } from "./sender-assertion.js";
-import { nextTraceparent, traceIdOf } from "./traceparent.js";
+import { startSpan, type TraceSpan } from "./telemetry.js";
 
 /**
  * How a webhook delivery is answered: a status (and optional JSON body) sent
@@ -547,15 +547,27 @@ export class GatewayServer {
     // the same 202 as before -- a dropped or unmatched event is not the
     // sender's error, and a non-2xx would only make them retry the same drop.
     // One trace per delivery (docs/adr/0050 §4), continuing the sender's own
-    // traceparent when it sent a valid one.
-    const traceparent = nextTraceparent(typeof req.headers.traceparent === "string" ? req.headers.traceparent : undefined);
+    // traceparent when it sent a valid one. The span covers verification-to-
+    // answer; what it decided is `aktis.event.outcome`.
+    const span = startSpan("webhook delivery", typeof req.headers.traceparent === "string" ? req.headers.traceparent : undefined, {
+      kind: "server",
+      attributes: {
+        "http.request.method": "POST",
+        "http.route": "/webhooks/:source",
+        "aktis.event_source": source.name,
+        "aktis.event_id": id,
+      },
+    });
     let outcome: WebhookOutcome;
     try {
-      outcome = await this.ingestWebhook(source, { id, headers, body, receivedAt }, traceparent);
+      outcome = await this.ingestWebhook(source, { id, headers, body, receivedAt }, span);
     } catch (error) {
       this.report(error);
+      span.fail("internal_error");
       outcome = { status: 202 };
     }
+    span.set({ "http.response.status_code": outcome.status });
+    span.end();
     if (outcome.body !== undefined) {
       res.writeHead(outcome.status, { "content-type": "application/json" }).end(JSON.stringify(outcome.body));
     } else {
@@ -567,7 +579,7 @@ export class GatewayServer {
   private async ingestWebhook(
     source: Extract<CompiledEventSource, { kind: "webhook" }>,
     input: { id: string; headers: Record<string, string>; body: JsonValue; receivedAt: Date },
-    traceparent?: string,
+    span: TraceSpan,
   ): Promise<WebhookOutcome> {
     let senderClaims: SenderClaims | undefined;
     let sender: Envelope["sender"] | undefined;
@@ -581,6 +593,7 @@ export class GatewayServer {
       const triggers = this.options.eventTriggers?.all();
       if (triggers && !couldMatchBeforeSender(triggers, preliminary)) {
         this.log(`webhook ${source.name} event ${input.id}: no trigger could match (ignored before sender lookup)`);
+        span.set({ "aktis.event.outcome": "ignored" });
         return { status: 202 };
       }
       const resolved = await this.resolveSender(source.sender, preliminary);
@@ -588,6 +601,7 @@ export class GatewayServer {
         // 202 already sent: a dropped event is not the sender's error, and a
         // non-2xx would only make it retry the same drop.
         this.log(`webhook ${source.name} event ${input.id}: dropped (${resolved.reason})`);
+        span.set({ "aktis.event.outcome": "dropped" });
         return { status: 202 };
       }
       senderClaims = await this.senderClaims(source.name, resolved);
@@ -603,7 +617,7 @@ export class GatewayServer {
       ...(repository ? { repository } : {}),
       now: input.receivedAt,
     });
-    return this.relayEvent(envelope, senderClaims, traceparent);
+    return this.relayEvent(envelope, senderClaims, span);
   }
 
   /**
@@ -712,7 +726,16 @@ export class GatewayServer {
     }
     const envelope = buildCronEnvelope({ source: source.name, ...(source.cron.payload !== undefined ? { payload: source.cron.payload } : {}), now: this.now() });
     res.writeHead(202).end();
-    this.relayEvent(envelope, undefined, nextTraceparent())
+    const span = startSpan("cron tick", undefined, {
+      kind: "server",
+      attributes: { "http.request.method": "POST", "http.route": "/events/:source/tick", "aktis.event_source": source.name },
+    });
+    this.relayEvent(envelope, undefined, span)
+      .catch((error: unknown) => {
+        span.fail("internal_error");
+        throw error;
+      })
+      .finally(() => span.end())
       .then((outcome) => outcome.after?.())
       .catch(this.report);
   }
@@ -748,10 +771,10 @@ export class GatewayServer {
    * an accepted event has side effects, and only the ones its trigger's
    * `reply` declares.
    */
-  private async relayEvent(envelope: Envelope, sender: SenderClaims | undefined, traceparent?: string): Promise<WebhookOutcome> {
-    const submitted = await this.options.orchestratorClient.submitEvent(envelope, sender, traceparent);
-    const trace = traceIdOf(traceparent);
-    if (trace) this.log(`event ${envelope.source}/${envelope.id}: trace ${trace}`);
+  private async relayEvent(envelope: Envelope, sender: SenderClaims | undefined, span: TraceSpan): Promise<WebhookOutcome> {
+    const submitted = await this.options.orchestratorClient.submitEvent(envelope, sender, span.traceparent);
+    this.log(`event ${envelope.source}/${envelope.id}: trace ${span.traceId}`);
+    span.set({ "aktis.event.outcome": submitted.kind });
     switch (submitted.kind) {
       case "ignored":
         this.log(`event ${envelope.source}/${envelope.id}: no trigger matched (ignored)`);
@@ -761,18 +784,25 @@ export class GatewayServer {
         return { status: 202 };
       case "failed":
         this.log(`event ${envelope.source}/${envelope.id}: relay failed: ${submitted.error}`);
+        span.fail("relay_failed");
         return { status: 202 };
       case "identity-required":
         this.log(`event ${envelope.source}/${envelope.id}: refused, ${submitted.body.error.code} for sender ${sender?.login ?? "?"}`);
+        // docs/adr/0050 §4: a refused delivery is a short trace ending in an
+        // error span that carries the code ("how often do senders hit the
+        // link wall?").
+        span.set({ "aktis.identity_error": submitted.body.error.code });
+        span.fail(submitted.body.error.code);
         return {
           status: 403,
           body: submitted.body,
           after: () => this.postIdentityError(submitted.body),
         };
       case "accepted":
+        span.set({ "aktis.trigger": submitted.trigger.name, "aktis.invocation_id": submitted.id });
         return {
           status: 202,
-          after: () => this.runAcceptedEvent(envelope, sender, submitted.id, submitted.trigger, traceparent),
+          after: () => this.runAcceptedEvent(envelope, sender, submitted.id, submitted.trigger, span.traceparent),
         };
     }
   }
@@ -884,7 +914,16 @@ export class GatewayServer {
         if (gh) await best(() => this.options.githubReplyClient.postIssueComment(gh.owner, gh.repo, gh.issueNumber, outcome.result ?? ""));
         const resumed = await this.waitAndResume(outcome.identityLink, async () => {
           // The resumed turn stays in the delivery's trace.
-          const again = await this.options.orchestratorClient.submitEvent(envelope, sender, nextTraceparent(traceparent));
+          const hop = startSpan("event resubmit", traceparent, { kind: "client", attributes: { "aktis.event_source": envelope.source } });
+          let again: Awaited<ReturnType<OrchestratorClient["submitEvent"]>>;
+          try {
+            again = await this.options.orchestratorClient.submitEvent(envelope, sender, hop.traceparent);
+            hop.set({ "aktis.event.outcome": again.kind });
+            if (again.kind === "identity-required") hop.fail(again.body.error.code);
+            else if (again.kind === "failed") hop.fail("relay_failed");
+          } finally {
+            hop.end();
+          }
           if (again.kind !== "accepted") {
             const why =
               again.kind === "ignored" ? "no trigger matched" : again.kind === "identity-required" ? again.body.error.code : again.error;

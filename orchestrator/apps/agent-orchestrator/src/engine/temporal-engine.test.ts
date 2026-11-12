@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { setupTelemetry } from "../telemetry.js";
 import { TemporalEngine } from "./temporal-engine.js";
 import { SENDER_ASSERTION_HEADER } from "../rbac/sender-assertion.js";
 import { verifySenderAssertion, verifySenderClaims } from "../rbac/sender-assertion.js";
@@ -705,5 +707,38 @@ describe("TemporalEngine trace context (docs/adr/0050 §4)", () => {
         expect(sent).not.toBe(inbound);
       }
     }
+  });
+
+  describe("with export on", () => {
+    let exporter = new InMemorySpanExporter();
+    let stop: () => Promise<void> = async () => {};
+    afterEach(async () => {
+      await stop();
+      exporter = new InMemorySpanExporter();
+    });
+
+    it("sends the context of an exported client span that is a child of the turn's", async () => {
+      stop = setupTelemetry("agent-orchestrator", { spanProcessor: new SimpleSpanProcessor(exporter) });
+      const { impl, calls } = scriptedFetch([{ id: "x", status: "succeeded", result: "ok" }]);
+      const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+      await engine.invoke(input({ traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" }));
+      await new Promise((r) => setTimeout(r, 0));
+      const hop = exporter.getFinishedSpans().find((s) => s.name === "engine POST /invoke");
+      expect(hop?.parentSpanContext?.spanId).toBe("00f067aa0ba902b7");
+      const sent = (calls[0]!.init!.headers as Record<string, string>)["traceparent"];
+      expect(sent).toBe(`00-4bf92f3577b34da6a3ce929d0e0e4736-${hop!.spanContext().spanId}-01`);
+      expect(hop?.attributes).toMatchObject({ "http.response.status_code": 202, "aktis.invocation_id": "conversation-abc.upd-1" });
+    });
+
+    it("marks a failed engine call's span with the status code", async () => {
+      stop = setupTelemetry("agent-orchestrator", { spanProcessor: new SimpleSpanProcessor(exporter) });
+      const impl = vi.fn(async () => new Response("no", { status: 503 })) as unknown as typeof fetch;
+      const engine = new TemporalEngine({ baseUrl: BASE, fetchImpl: impl });
+      await expect(engine.invoke(input())).rejects.toThrow(/503/);
+      await new Promise((r) => setTimeout(r, 0));
+      const hop = exporter.getFinishedSpans().find((s) => s.name === "engine POST /invoke");
+      expect(hop?.status.code).toBe(2);
+      expect(hop?.attributes["error.type"]).toBe("http_503");
+    });
   });
 });

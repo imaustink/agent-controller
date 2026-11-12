@@ -1,5 +1,6 @@
 import * as k8s from "@kubernetes/client-node";
 import { config } from "./config.js";
+import { setupTelemetry } from "./telemetry.js";
 import { CallbackReceiver } from "./callback/receiver.js";
 import { NatsJobReceiver } from "./callback/nats-job-receiver.js";
 import type { JobResultReceiver } from "./callback/receiver.js";
@@ -102,6 +103,9 @@ const EXIT_STARTUP_FAILURE = 1;
  *   orchestrator result channel (docs/messaging.md), unchanged.
  */
 async function main(): Promise<void> {
+  // docs/adr/0050 §4: a span per /invoke and per engine call, exported only
+  // when the chart sets OTEL_EXPORTER_OTLP_ENDPOINT.
+  const shutdownTelemetry = setupTelemetry("agent-orchestrator");
   // Validate startup requirements based on the result-channel mode.
   if (!config.natsUrl) {
     // HTTP callback mode: both the secret value (for HMAC verification) and
@@ -1089,6 +1093,7 @@ async function main(): Promise<void> {
     if (redisInvocationStore) closers.push(redisInvocationStore.close());
     if (redisAgentReplyStore) closers.push(redisAgentReplyStore.close());
     await Promise.all(closers);
+    await shutdownTelemetry();
     process.exit(0);
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));

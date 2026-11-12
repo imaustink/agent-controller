@@ -54,6 +54,7 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{- include "integration-gateway.otelEnv" . | nindent 12 }}
             - name: GATEWAY_HTTP_PORT
               value: {{ .Values.port | quote }}
             - name: GATEWAY_ORCHESTRATOR_URL

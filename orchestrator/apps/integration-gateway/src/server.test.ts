@@ -11,6 +11,8 @@ import { InMemoryPendingLabelStore } from "./label-reconciler.js";
 import type { AcceptedTrigger, EventSubmitResult, OrchestratorClient, OrchestratorInvokeResult, PollHooks } from "./orchestrator-client.js";
 import { GatewayServer, type GatewayServerOptions } from "./server.js";
 import { InMemorySessionPageStore } from "./session-page-store.js";
+import { InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { setupTelemetry } from "./telemetry.js";
 
 // Wrapped so a test can prove verification rejected a request BEFORE anything
 // parsed it -- the property the whole handler order exists for.
@@ -969,6 +971,56 @@ describe("webhook trace context (docs/adr/0050 §4)", () => {
     const fresh = h.submitEvent.mock.calls[1] as unknown as [unknown, unknown, string];
     expect(fresh[2]).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
     expect(fresh[2].slice(3, 35)).not.toBe("4bf92f3577b34da6a3ce929d0e0e4736");
+  });
+
+  describe("with export on", () => {
+    // A fresh exporter per test: shutting a provider down stops its exporter.
+    let exporter = new InMemorySpanExporter();
+    let stop: () => Promise<void> = async () => {};
+    afterEach(async () => {
+      await stop();
+      exporter = new InMemorySpanExporter();
+    });
+
+    it("exports one server span per delivery, continuing the sender's trace, and forwards THAT span to /invoke", async () => {
+      stop = setupTelemetry("integration-gateway", { spanProcessor: new SimpleSpanProcessor(exporter) });
+      const h = await start();
+      await postGithub(h, GITHUB_PAYLOAD, { extraHeaders: { traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" } });
+      await settle();
+      const [span] = exporter.getFinishedSpans();
+      expect(span?.name).toBe("webhook delivery");
+      expect(span?.spanContext().traceId).toBe("4bf92f3577b34da6a3ce929d0e0e4736");
+      expect(span?.parentSpanContext?.spanId).toBe("00f067aa0ba902b7");
+      // The orchestrator's span must nest under an EXPORTED span, not a
+      // minted id nobody reports.
+      const sent = (h.submitEvent.mock.calls[0] as unknown as [unknown, unknown, string])[2];
+      expect(sent).toBe(`00-${span!.spanContext().traceId}-${span!.spanContext().spanId}-01`);
+      expect(span?.attributes).toMatchObject({
+        "aktis.event_source": "github",
+        "aktis.event_id": "delivery-123",
+        "aktis.event.outcome": "accepted",
+        "http.response.status_code": 202,
+      });
+    });
+
+    it("ends a refused delivery's trace in an error span carrying the identity error code", async () => {
+      stop = setupTelemetry("integration-gateway", { spanProcessor: new SimpleSpanProcessor(exporter) });
+      const h = await start();
+      h.submitEvent.mockResolvedValueOnce({
+        kind: "identity-required",
+        body: { status: "failed", error: { code: "identity_link_required", message: "link your account" } },
+      });
+      expect((await postGithub(h)).status).toBe(403);
+      await settle();
+      const [span] = exporter.getFinishedSpans();
+      expect(span?.status.code).toBe(2); // SpanStatusCode.ERROR
+      expect(span?.attributes).toMatchObject({
+        "error.type": "identity_link_required",
+        "aktis.identity_error": "identity_link_required",
+        "aktis.event.outcome": "identity-required",
+        "http.response.status_code": 403,
+      });
+    });
   });
 });
 

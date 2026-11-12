@@ -7,6 +7,12 @@ import type { AgentOrchestratorChannel } from "./agents/nats-agent-channel.js";
 import { InMemorySessionStore } from "./session/in-memory-session-store.js";
 import type { Envelope, EventTriggerResource } from "@aktis/event-triggers";
 import { CrdEventTriggerRegistry } from "./routing/crd-event-trigger-registry.js";
+import { traceIdOf } from "./traceparent.js";
+import { setupTelemetry } from "./telemetry.js";
+import { InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base";
+
+/** Any version-00 traceparent: every /invoke turn carries its server span's (docs/adr/0050 §4). */
+const ANY_TRACEPARENT = expect.stringMatching(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
 
 /**
  * Every request in this file goes over a fresh TCP connection.
@@ -246,6 +252,7 @@ describe("InvokeServer", () => {
       authToken: "tok-1",
       remoteControlUrlListener: expect.any(Function),
       reportIdentityLinkPending: expect.any(Function),
+      traceparent: ANY_TRACEPARENT,
     });
 
     const pendingRes = await fetch(`http://127.0.0.1:${port}/invoke/${id}`);
@@ -347,6 +354,7 @@ describe("InvokeServer", () => {
       authToken: "",
       remoteControlUrlListener: expect.any(Function),
       reportIdentityLinkPending: expect.any(Function),
+      traceparent: ANY_TRACEPARENT,
     });
 
     await new Promise((r) => setTimeout(r, 10));
@@ -924,6 +932,7 @@ describe("InvokeServer session-scoped pending identity link (GitHub OAuth Device
       authToken: "tok-1",
       remoteControlUrlListener: expect.any(Function),
       reportIdentityLinkPending: expect.any(Function),
+      traceparent: ANY_TRACEPARENT,
       sessionId: "session-1",
       activeSkillId: undefined,
       activeAgentId: undefined,
@@ -1775,6 +1784,7 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
       authToken: "tok-1",
       remoteControlUrlListener: expect.any(Function),
       reportIdentityLinkPending: expect.any(Function),
+      traceparent: ANY_TRACEPARENT,
       sessionId: "cli-7",
       activeSkillId: "recipe-skill",
       sessionSubject: "open-webui",
@@ -1804,6 +1814,7 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
       remoteControlUrlListener: expect.any(Function),
       identityLinkFlow: "device",
       reportIdentityLinkPending: expect.any(Function),
+      traceparent: ANY_TRACEPARENT,
     });
 
     await server.close();
@@ -1954,6 +1965,7 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
       authToken: "tok-1",
       remoteControlUrlListener: expect.any(Function),
       reportIdentityLinkPending: expect.any(Function),
+      traceparent: ANY_TRACEPARENT,
     });
 
     const invalidRes = await fetch(`http://127.0.0.1:${port}/invoke`, {
@@ -1968,6 +1980,7 @@ describe("InvokeServer session-scoped active skill (ADR 0012)", () => {
       authToken: "tok-1",
       remoteControlUrlListener: expect.any(Function),
       reportIdentityLinkPending: expect.any(Function),
+      traceparent: ANY_TRACEPARENT,
     });
 
     await server.close();
@@ -2641,9 +2654,9 @@ describe("InvokeServer accept-phase identity check (docs/adr/0049 §6)", () => {
 });
 
 describe("InvokeServer trace context (docs/adr/0050 §4)", () => {
-  it("carries a valid inbound traceparent into the turn, and drops a malformed one", async () => {
-    for (const [header, expected] of [
-      ["00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"],
+  it("continues a valid inbound traceparent into the turn (a child span of it), and roots a new trace for a malformed one", async () => {
+    for (const [header, expectedTrace] of [
+      ["00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", "4bf92f3577b34da6a3ce929d0e0e4736"],
       ["not-a-traceparent", undefined],
     ] as const) {
       const graph: AgentGraphLike = {
@@ -2659,8 +2672,40 @@ describe("InvokeServer trace context (docs/adr/0050 §4)", () => {
       });
       await new Promise((r) => setTimeout(r, 10));
       const arg = (graph.invoke as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as { traceparent?: string };
-      expect(arg.traceparent).toBe(expected);
+      expect(arg.traceparent).toEqual(ANY_TRACEPARENT);
+      // Never the inbound span itself: this hop is a span of its own.
+      expect(arg.traceparent).not.toBe(header);
+      if (expectedTrace) expect(traceIdOf(arg.traceparent)).toBe(expectedTrace);
+      else expect(traceIdOf(arg.traceparent)).not.toBe("4bf92f3577b34da6a3ce929d0e0e4736");
       await server.close();
+    }
+  });
+
+  it("with export on, hands the turn the context of an exported server span under the inbound one", async () => {
+    const exporter = new InMemorySpanExporter();
+    const stop = setupTelemetry("agent-orchestrator", { spanProcessor: new SimpleSpanProcessor(exporter) });
+    try {
+      const graph: AgentGraphLike = {
+        invoke: vi.fn().mockResolvedValue({ request: "x", authToken: "t", skillCandidates: [], result: "done" } as AgentState),
+        stream: vi.fn().mockResolvedValue(noStream()),
+      };
+      const server = new InvokeServer(graph);
+      const port = await listenOn(server);
+      const res = await fetch(`http://127.0.0.1:${port}/invoke`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer t", traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" },
+        body: JSON.stringify({ request: "hi" }),
+      });
+      const { id } = (await res.json()) as { id: string };
+      await new Promise((r) => setTimeout(r, 10));
+      const span = exporter.getFinishedSpans().find((s) => s.name === "POST /invoke");
+      expect(span?.parentSpanContext?.spanId).toBe("00f067aa0ba902b7");
+      const arg = (graph.invoke as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as { traceparent?: string };
+      expect(arg.traceparent).toBe(`00-4bf92f3577b34da6a3ce929d0e0e4736-${span!.spanContext().spanId}-01`);
+      expect(span?.attributes).toMatchObject({ "http.response.status_code": 202, "aktis.invocation_id": id });
+      await server.close();
+    } finally {
+      await stop();
     }
   });
 });

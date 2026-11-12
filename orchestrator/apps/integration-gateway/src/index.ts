@@ -1,5 +1,6 @@
 import * as k8s from "@kubernetes/client-node";
 import { config } from "./config.js";
+import { setupTelemetry } from "./telemetry.js";
 import { ClaudeSetupTokenFlows } from "./claude-auth/pty-setup-token.js";
 import { ClaudeLoginFlows } from "./claude-auth/pty-login.js";
 import { K8sSecretClaudeTokenStore } from "./claude-auth/k8s-secret-store.js";
@@ -40,6 +41,9 @@ const EXIT_STARTUP_FAILURE = 1;
 // store -- so there is nothing left to wait for at boot.
 
 async function main(): Promise<void> {
+  // docs/adr/0050 §4: spans for each delivery, exported only when the chart
+  // sets OTEL_EXPORTER_OTLP_ENDPOINT.
+  const shutdownTelemetry = setupTelemetry("integration-gateway");
   // OIDC client_credentials fields (automatic token fetch/refresh) are an
   // opt-in alternative to the static GATEWAY_ORCHESTRATOR_TOKEN -- same
   // partial-config-fails-closed discipline as identity-link below (a typo'd
@@ -484,6 +488,7 @@ async function main(): Promise<void> {
     // draining here went with them.
     if (sessionPageStore instanceof RedisSessionPageStore) await sessionPageStore.close();
     if (pendingLabelStore instanceof RedisPendingLabelStore) await pendingLabelStore.close();
+    await shutdownTelemetry();
     process.exit(0);
   };
 

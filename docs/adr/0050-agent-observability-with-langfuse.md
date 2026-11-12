@@ -176,11 +176,26 @@ never sees their model calls.
 The context passes integration-gateway → agent-orchestrator → the Temporal
 gateway `/invoke` → workflow → AgentRun → pod.
 
-- Every HTTP hop uses the W3C `traceparent` header. integration-gateway and
-  agent-orchestrator export no spans of their own: the gateway mints a
-  `traceparent` per delivery (or continues a valid inbound one), and
-  agent-orchestrator forwards a child of it on `/invoke` and `/invoke/check`.
-  The engine's spans are the first ones exported in the trace.
+- Every HTTP hop uses the W3C `traceparent` header, and every hop forwards
+  the context of a span it exports, so no span in the trace points at a
+  parent nobody reported. *As built* (OpenTelemetry SDK, no
+  auto-instrumentation; exported only when the chart sets
+  `OTEL_EXPORTER_OTLP_ENDPOINT`, otherwise each hop still mints/continues a
+  `traceparent` as before):
+  - **integration-gateway:** a `webhook delivery` server span per delivery
+    (continuing the sender's valid `traceparent`), and a `cron tick` span per
+    tick. They record `aktis.event_source`, `aktis.event_id`,
+    `aktis.event.outcome` (`ignored`, `dropped`, `rejected`, `failed`,
+    `identity-required` or `accepted`), the trigger and invocation id, and
+    the response status. A re-submit after linking is an `event resubmit`
+    client span in the same trace.
+  - **agent-orchestrator:** a `POST /invoke` server span, whose context the
+    turn carries, and an `engine POST /invoke` / `engine POST /invoke/check`
+    client span per engine call. The engine's server span nests under the
+    client span.
+  - Span attributes pass an allowlist at the emitter (`aktis.*` plus a few
+    `http.*` and `error.type` keys). Headers, bodies, URLs and sender logins
+    are never recorded.
 - The Temporal interceptor carries it from the gateway into the workflow.
 - The AgentRun carries it as `spec.launch.traceparent` (0049's `spec.launch`)
   and the controller passes it to the pod as `TRACEPARENT`.
