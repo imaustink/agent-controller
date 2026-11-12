@@ -313,9 +313,9 @@ claudeCodeSweAgent:
   githubAppPrivateKeySecretKey: ""
   githubAppInstallationIdSecretKey: ""
   githubAppSlug: ""
-  # Claude Code model id/alias (e.g. "sonnet", "claude-sonnet-5"). Empty uses
-  # the CLI's own default.
-  model: ""
+  # Claude Code model id/alias (e.g. "sonnet", "claude-opus-5-5"). Empty uses
+  # the CLI's own default. claude-opus-5-5 needs the image's CLI >= 2.1.280.
+  model: "claude-opus-5-5"
   # Claude Code skills, installed into the run's ~/.claude/skills by an init
   # container that downloads `repo` at `ref` from GitHub and copies just the
   # `names` directories found under `path`. Keep `ref` a commit SHA: a skill
