@@ -66,6 +66,7 @@ describe("QdrantToolStore", () => {
             agentRunTemplate: null,
             mcpExec: null,
             identityProviders: null,
+            defaultIdentity: null,
             tier: null,
           },
         },
