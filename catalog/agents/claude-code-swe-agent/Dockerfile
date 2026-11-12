@@ -69,7 +69,13 @@ FROM node:22-bookworm-slim AS runtime
 
 ARG GH_VERSION=2.63.2
 ARG GO_VERSION=1.24.5
-ARG CLAUDE_CODE_VERSION=2.1.218
+# 2.1.280+ is required for claude-opus-5-5; the API rejects older CLIs with
+# "does not support this model". 2.1.322 re-checked against claude-runner's
+# contracts: stream-json system/init, assistant text+tool_use, result
+# is_error/subtype/result (a new rate_limit_event type is ignored); the
+# interactive transcript's bridgeSessionId + system/turn_duration; and
+# `agents --json --all` entries' sessionId/cwd/kind/status.
+ARG CLAUDE_CODE_VERSION=2.1.322
 
 # Common dev-tool baseline for the agent's own use during a task (build
 # tooling, archive handling, JSON munging, searching a checkout, editing) --

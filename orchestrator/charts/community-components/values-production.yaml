@@ -159,7 +159,6 @@ claudeCodeSweAgent:
   githubAppPrivateKeySecretKey: GITHUB_APP_PRIVATE_KEY
   githubAppInstallationIdSecretKey: GITHUB_APP_INSTALLATION_ID
   githubAppSlug: k5s-bot
-  model: ""
   identityLink:
     enabled: true
     providers:
