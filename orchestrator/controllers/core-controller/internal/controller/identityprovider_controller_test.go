@@ -17,7 +17,10 @@ limitations under the License.
 package controller
 
 import (
+	"strings"
+
 	"context"
+	corev1 "k8s.io/api/core/v1"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -138,6 +141,62 @@ var _ = Describe("IdentityProvider Controller", func() {
 			Expect(cond.Reason).To(Equal("Collision"))
 			Expect(cond.Message).To(ContainSubstring("envVar \"SHARED_TOKEN\""))
 			Expect(cond.Message).To(ContainSubstring("label \"Shared\""))
+		})
+	})
+
+	// docs/adr/0049 step 5: an agentCredential is Ready only when its Secret
+	// exists, holds the key, and opted in with the label.
+	Context("with an agentCredential", func() {
+		readyOf := func(name string, secret *corev1.Secret) *metav1.Condition {
+			if secret != nil {
+				Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+				DeferCleanup(func() { _ = k8sClient.Delete(ctx, secret) })
+			}
+			provider := &toolv1alpha1.IdentityProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				Spec: toolv1alpha1.IdentityProviderSpec{
+					EnvVar: "AC_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")), Label: name,
+					AgentCredential: &toolv1alpha1.IdentityProviderAgentCredential{
+						SecretRef: toolv1alpha1.SecretKeySelector{Name: name + "-secret", Key: "token"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, provider)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, provider) })
+			r := &IdentityProviderReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: name, Namespace: "default"}})
+			Expect(err).NotTo(HaveOccurred())
+			var updated toolv1alpha1.IdentityProvider
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: "default"}, &updated)).To(Succeed())
+			return meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+		}
+		secret := func(name string, labelled bool, data map[string][]byte) *corev1.Secret {
+			s := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name + "-secret", Namespace: "default"}, Data: data}
+			if labelled {
+				s.Labels = map[string]string{toolv1alpha1.AgentCredentialSecretLabel: "true"}
+			}
+			return s
+		}
+
+		It("is Ready with a labelled Secret holding the key", func() {
+			cond := readyOf("ac-ok", secret("ac-ok", true, map[string][]byte{"token": []byte("t")}))
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		})
+		It("is not Ready when the Secret is missing", func() {
+			cond := readyOf("ac-missing", nil)
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal("AgentCredentialInvalid"))
+			Expect(cond.Message).To(ContainSubstring("does not exist"))
+		})
+		It("is not Ready when the Secret has not opted in with the label", func() {
+			cond := readyOf("ac-unlabelled", secret("ac-unlabelled", false, map[string][]byte{"token": []byte("t")}))
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Message).To(ContainSubstring(toolv1alpha1.AgentCredentialSecretLabel))
+		})
+		It("is not Ready when the key is absent", func() {
+			cond := readyOf("ac-nokey", secret("ac-nokey", true, map[string][]byte{"other": []byte("t")}))
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Message).To(ContainSubstring(`key "token"`))
 		})
 	})
 })

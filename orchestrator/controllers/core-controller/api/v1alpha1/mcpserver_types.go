@@ -151,6 +151,18 @@ type MCPServerSpec struct {
 	// +optional
 	IdentityProviders []string `json:"identityProviders,omitempty"`
 
+	// defaultIdentity is whose credential a call to this server's tools presents on its
+	// resource providers (docs/adr/0049 step 5):
+	//   - delegated (the default): the caller's own linked credential.
+	//   - agent: each resource provider's IdentityProvider.spec.agentCredential.
+	//     The caller needs no linked account, so any role-permitted caller
+	//     acts with the operator's credential: keep allowedRoles tight. Every
+	//     call writes a "tool-authorization" audit record naming the caller.
+	// Runtime providers (the model credential: "claude", "claude-remote") are
+	// always the caller's.
+	// +optional
+	DefaultIdentity ToolIdentityMode `json:"defaultIdentity,omitempty"`
+
 	// exposure is the default-deny map of which advertised tools become callable
 	// MCPTools, and with which roles. Empty exposes nothing, however many tools
 	// the server advertises. See MCPToolExposure.

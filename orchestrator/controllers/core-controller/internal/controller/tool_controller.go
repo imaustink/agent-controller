@@ -73,6 +73,11 @@ func (r *ToolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	} else {
 		condition = r.checkServiceAccount(ctx, &tool)
 	}
+	if condition.Status == metav1.ConditionTrue && tool.Spec.DefaultIdentity == toolv1alpha1.ToolIdentityModeAgent {
+		if c, bad := checkAgentIdentity(ctx, r.Client, tool.Namespace, tool.Spec.IdentityProviders); bad {
+			condition = c
+		}
+	}
 	condition.ObservedGeneration = tool.Generation
 
 	meta.SetStatusCondition(&tool.Status.Conditions, condition)
@@ -144,4 +149,40 @@ func (r *ToolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&toolv1alpha1.Tool{}).
 		Named("tool").
 		Complete(r)
+}
+
+// checkAgentIdentity confirms every resource provider a defaultIdentity:
+// agent tool declares has an agentCredential to act with (docs/adr/0049 step
+// 5). A runtime provider (any flow other than oauth: the model credential) is
+// always the caller's, so it needs none. bad=false means nothing is wrong.
+func checkAgentIdentity(ctx context.Context, c client.Client, namespace string, providers []string) (metav1.Condition, bool) {
+	cond := metav1.Condition{Type: toolConditionReady, Status: metav1.ConditionFalse}
+	for _, name := range providers {
+		var idp toolv1alpha1.IdentityProvider
+		if err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &idp); err != nil {
+			if apierrors.IsNotFound(err) {
+				cond.Reason = "IdentityProviderMissing"
+				cond.Message = fmt.Sprintf("defaultIdentity is agent, and IdentityProvider %q does not exist", name)
+				return cond, true
+			}
+			cond.Status = metav1.ConditionUnknown
+			cond.Reason = "IdentityProviderLookupFailed"
+			cond.Message = err.Error()
+			return cond, true
+		}
+		if idp.Spec.Flow != "" && idp.Spec.Flow != toolv1alpha1.IdentityProviderFlowOAuth {
+			continue
+		}
+		if idp.Spec.AgentCredential == nil {
+			cond.Reason = "AgentCredentialMissing"
+			cond.Message = fmt.Sprintf("defaultIdentity is agent, and IdentityProvider %q has no agentCredential for it to act with", name)
+			return cond, true
+		}
+		if ready := meta.FindStatusCondition(idp.Status.Conditions, identityProviderConditionReady); ready != nil && ready.Status == metav1.ConditionFalse {
+			cond.Reason = "AgentCredentialInvalid"
+			cond.Message = fmt.Sprintf("IdentityProvider %q is not Ready: %s", name, ready.Message)
+			return cond, true
+		}
+	}
+	return metav1.Condition{}, false
 }

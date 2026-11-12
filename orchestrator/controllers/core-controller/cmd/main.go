@@ -244,6 +244,8 @@ func main() {
 	if err := (&controller.IdentityProviderReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		// Uncached, as for EventSource: get one Secret, no informer.
+		SecretReader: mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "identityprovider")
 		os.Exit(1)

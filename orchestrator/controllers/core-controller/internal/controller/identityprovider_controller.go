@@ -21,10 +21,12 @@ import (
 	"fmt"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -47,6 +49,12 @@ const identityProviderConditionReady = "Ready"
 type IdentityProviderReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// SecretReader reads an agentCredential Secret. Uncached
+	// (mgr.GetAPIReader()) for the same reason as EventSourceReconciler's:
+	// no cluster-wide Secret informer to confirm one key. Nil falls back to
+	// Client.
+	SecretReader client.Reader
 }
 
 // +kubebuilder:rbac:groups=core.aktis.ai,resources=identityproviders,verbs=get;list;watch;create;update;patch;delete
@@ -84,16 +92,24 @@ func (r *IdentityProviderReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 	}
 
+	reason := "Collision"
+	if problem := r.checkAgentCredential(ctx, &provider); problem != "" {
+		if len(problems) == 0 {
+			reason = "AgentCredentialInvalid"
+		}
+		problems = append(problems, problem)
+	}
+
 	condition := metav1.Condition{
 		Type:               identityProviderConditionReady,
 		Status:             metav1.ConditionTrue,
 		Reason:             "Unique",
-		Message:            "envVar and label are unique across this namespace's IdentityProviders",
+		Message:            "envVar and label are unique across this namespace's IdentityProviders" + agentCredentialNote(&provider),
 		ObservedGeneration: provider.Generation,
 	}
 	if len(problems) > 0 {
 		condition.Status = metav1.ConditionFalse
-		condition.Reason = "Collision"
+		condition.Reason = reason
 		condition.Message = strings.Join(problems, "; ")
 		log.Info("identityprovider collides with a sibling", "identityprovider", provider.Name, "problems", problems)
 	}
@@ -115,4 +131,41 @@ func (r *IdentityProviderReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&toolv1alpha1.IdentityProvider{}).
 		Named("identityprovider").
 		Complete(r)
+}
+
+// checkAgentCredential confirms an agentCredential names a Secret that exists,
+// holds the key, and opted in with AgentCredentialSecretLabel (docs/adr/0049
+// step 5). It returns the problem, or "" when there is none or no
+// agentCredential is set.
+func (r *IdentityProviderReconciler) checkAgentCredential(ctx context.Context, provider *toolv1alpha1.IdentityProvider) string {
+	ac := provider.Spec.AgentCredential
+	if ac == nil {
+		return ""
+	}
+	reader := r.SecretReader
+	if reader == nil {
+		reader = r.Client
+	}
+	var secret corev1.Secret
+	if err := reader.Get(ctx, types.NamespacedName{Namespace: provider.Namespace, Name: ac.SecretRef.Name}, &secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Sprintf("agentCredential Secret %q does not exist", ac.SecretRef.Name)
+		}
+		return fmt.Sprintf("agentCredential Secret %q could not be read: %v", ac.SecretRef.Name, err)
+	}
+	if secret.Labels[toolv1alpha1.AgentCredentialSecretLabel] != "true" {
+		return fmt.Sprintf("agentCredential Secret %q is not labelled %s=true, so it has not opted in to being used as an agent credential",
+			ac.SecretRef.Name, toolv1alpha1.AgentCredentialSecretLabel)
+	}
+	if len(secret.Data[ac.SecretRef.Key]) == 0 {
+		return fmt.Sprintf("agentCredential Secret %q has no non-empty key %q", ac.SecretRef.Name, ac.SecretRef.Key)
+	}
+	return ""
+}
+
+func agentCredentialNote(provider *toolv1alpha1.IdentityProvider) string {
+	if provider.Spec.AgentCredential == nil {
+		return ""
+	}
+	return "; agentCredential Secret is present and labelled"
 }
