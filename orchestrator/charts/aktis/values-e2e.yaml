@@ -1,9 +1,9 @@
 # values-e2e.yaml — minikube overlay for the e2e suite (see e2e/README.md).
 #
 # Layered ON TOP of values-minikube-demo.yaml, not instead of it:
-#   helm upgrade --install agent-controller orchestrator/charts/agent-controller \
-#     -f orchestrator/charts/agent-controller/values-minikube-demo.yaml \
-#     -f orchestrator/charts/agent-controller/values-e2e.yaml
+#   helm upgrade --install agent-controller orchestrator/charts/aktis \
+#     -f orchestrator/charts/aktis/values-minikube-demo.yaml \
+#     -f orchestrator/charts/aktis/values-e2e.yaml
 #
 # The demo values exist to make a human-usable playground; this file adds only
 # what an automated test needs on top: an integration-gateway to receive
@@ -59,7 +59,7 @@ temporal-engine:
     # The subchart's own default (`agent-controller-agent-orchestrator`)
     # assumes the `agent-orchestrator` subchart at its OWN release-name-derived
     # secret name, but that subchart sets `fullnameOverride: agent-orchestrator`
-    # (`orchestrator/charts/agent-controller/values.yaml`), so its real Secret is
+    # (`orchestrator/charts/aktis/values.yaml`), so its real Secret is
     # `agent-orchestrator-secrets` -- the default name doesn't exist in ANY
     # profile, e2e or otherwise, and the worker/gateway Pods CreateContainer-
     # ConfigError on first boot without this override.
@@ -72,7 +72,7 @@ temporal-engine:
     # with.
     secretName: agent-orchestrator-secrets
   nats:
-    # Empty by default -- `orchestrator/charts/agent-controller/charts/temporal-engine`'s own
+    # Empty by default -- `orchestrator/charts/aktis/charts/temporal-engine`'s own
     # comment says this "disables bridged pod agents entirely, leaving the
     # declarative loop and checkpoint-resume step tools", and the worker logs
     # it plainly at startup ("AGENT_NATS_URL not set; bridged pod agents

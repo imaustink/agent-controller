@@ -20,7 +20,7 @@ const STARTING_WORK_ACK = "Starting work on this now.";
 
 /**
  * The idle window this environment runs with — `agentIdleTimeoutSeconds` in
- * orchestrator/charts/agent-controller/values-e2e.yaml. Specs below pace turns relative to
+ * orchestrator/charts/aktis/values-e2e.yaml. Specs below pace turns relative to
  * it, so it lives here as a named constant rather than as scattered magic
  * numbers that would silently stop meaning anything if the value changed.
  */

@@ -23,9 +23,9 @@ Given a search query (as a single CLI argument), the container:
 ## Why SearXNG
 
 SearXNG is a self-hostable, privacy-respecting metasearch engine with a JSON
-API -- see `orchestrator/charts/agent-controller/templates/searxng.yaml` for how the
+API -- see `orchestrator/charts/aktis/templates/searxng.yaml` for how the
 in-cluster instance this tool talks to is deployed (optional, off by default,
-`searxng.enabled` in `orchestrator/charts/agent-controller/values.yaml`). SearXNG disables
+`searxng.enabled` in `orchestrator/charts/aktis/values.yaml`). SearXNG disables
 JSON output by default; the bundled `settings.yml` turns it on specifically
 for this tool's use, and the Service is ClusterIP-only so it's never reachable
 from outside the cluster.

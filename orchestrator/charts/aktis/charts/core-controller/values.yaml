@@ -126,3 +126,14 @@ eventTick:
   # ServiceAccount token with --variable). Empty takes the binary's default
   # (curlimages/curl:8.11.1).
   image: ""
+
+# Aktis rename migration hook (templates/migrate-aktis.yaml, docs/aktis-migration.md).
+# A post-install/post-upgrade (Argo CD: PostSync) Job that adds the aktis.ai keys
+# to credential Secrets the pre-Aktis release wrote and releases old-group
+# finalizers so the old CRDs prune cleanly. Idempotent; a no-op on clusters that
+# never ran core.controller-agent.dev. Remove once every deployment has upgraded.
+migrateAktis:
+  enabled: true
+  # Namespaces holding credential Secrets/ConfigMaps (identity links, Claude
+  # auth, connection principals). Empty means the release namespace.
+  namespaces: []

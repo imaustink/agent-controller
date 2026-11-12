@@ -11,10 +11,10 @@
 # secrets and docker-registry-credentials pull secret described in
 # imaustink/homelab's kubernetes/manifests/agent-controller/README.md):
 #
-#   helm dependency update orchestrator/charts/agent-controller/charts/agent-orchestrator
-#   helm dependency update orchestrator/charts/agent-controller
-#   helm install agent-controller orchestrator/charts/agent-controller -n controller-agent \
-#     -f orchestrator/charts/agent-controller/values-production.yaml
+#   helm dependency update orchestrator/charts/aktis/charts/agent-orchestrator
+#   helm dependency update orchestrator/charts/aktis
+#   helm install agent-controller orchestrator/charts/aktis -n controller-agent \
+#     -f orchestrator/charts/aktis/values-production.yaml
 #
 # Must be installed BEFORE the community-components chart (its Tool/Skill/Agent
 # CRs depend on the Tool/Skill/Agent/ToolRun/AgentRun/LocalTool CRDs that this
@@ -87,7 +87,7 @@ agent-orchestrator:
   config:
     # This cluster has no Temporal deployment at all (see temporal-engine.enabled
     # below) -- clear the umbrella chart's own default of "temporal"
-    # (orchestrator/charts/agent-controller/values.yaml, docs/adr/0036's rollout default) so
+    # (orchestrator/charts/aktis/values.yaml, docs/adr/0036's rollout default) so
     # every turn runs the in-process LangGraph loop instead of being forwarded
     # to a gateway Service backed by pods that were never buildable here.
     # Helm deep-merges this `config` map key-by-key against that default, so
@@ -210,7 +210,7 @@ agent-orchestrator:
 
 # No Temporal cluster exists in this environment (docs/adr/0036 "Assumes a
 # reachable Temporal cluster; no server is bundled") -- override the umbrella
-# chart's own default of enabled: true (orchestrator/charts/agent-controller/values.yaml)
+# chart's own default of enabled: true (orchestrator/charts/aktis/values.yaml)
 # so this release stops deploying the gateway/worker Deployments here. Without
 # this they run permanently in ImagePullBackOff (their image names have no
 # registry prefix, so containerd resolves them against Docker Hub, which has
@@ -387,12 +387,12 @@ integration-gateway:
   identityLink:
     enabled: true
     # GitHub App OAuth client_id -- PUBLIC, not a secret (see this field's
-    # doc comment in orchestrator/charts/agent-controller/charts/integration-gateway/values.yaml).
+    # doc comment in orchestrator/charts/aktis/charts/integration-gateway/values.yaml).
     # This is the App's Client ID (Iv1./Iv23... string), NOT its numeric App ID.
     githubAppClientId: "Iv23liVElRYG8F7GBzRy"
     # Must exactly match the GitHub App's registered "Callback URL"
     # (scheme/host/path/trailing-slash all significant) -- see
-    # orchestrator/charts/agent-controller/charts/integration-gateway/values.yaml's
+    # orchestrator/charts/aktis/charts/integration-gateway/values.yaml's
     # githubOauthRedirectUri comment for the same discipline
     # GOOGLE_REDIRECT_URI already follows elsewhere in this file.
     githubOauthRedirectUri: "https://gateway.kurpuis.com/identity-link/github/callback"
@@ -404,7 +404,7 @@ integration-gateway:
   # "starting work" comment + live turn-history page for the ai-triage
   # trigger generally. redisUrl is left unset -- it falls back to
   # identityLink.redisUrl (see that field's comment in
-  # orchestrator/charts/agent-controller/charts/integration-gateway/values.yaml).
+  # orchestrator/charts/aktis/charts/integration-gateway/values.yaml).
   #
   # That Redis is ephemeral, so a posted page link dies with its pod. Tolerable
   # (the link 404s) and unlike a credential, which is why only the credentials

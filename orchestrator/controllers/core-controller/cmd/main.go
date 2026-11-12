@@ -70,6 +70,10 @@ func agentNatsConfigFromEnv() controller.AgentNatsConfig {
 
 // nolint:gocyclo
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "migrate-aktis" {
+		os.Exit(runMigrateAktis(os.Args[2:]))
+	}
+
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string

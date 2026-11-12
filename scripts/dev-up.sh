@@ -102,7 +102,7 @@ done
 
 # ── 5. Nested Helm dependency (Helm doesn't recurse into file:// subcharts) ──
 step "Fetching agent-orchestrator's own subchart dependency (qdrant)..."
-helm dependency update "$REPO_ROOT/orchestrator/charts/agent-controller/charts/agent-orchestrator"
+helm dependency update "$REPO_ROOT/orchestrator/charts/aktis/charts/agent-orchestrator"
 
 # ── 6. CRDs ──────────────────────────────────────────────────────────────────
 step "Applying CRDs..."
@@ -111,7 +111,7 @@ step "Applying CRDs..."
 # the (separately-released) community-components chart's Tool/Skill/Agent CRs
 # depend on.
 # Source of truth is the controller's generated bases. This previously globbed
-# orchestrator/charts/agent-controller/charts/core-controller/crds/, which no longer exists
+# orchestrator/charts/aktis/charts/core-controller/crds/, which no longer exists
 # -- and because an unmatched glob expands to nothing, the loop silently
 # applied ZERO CRDs instead of failing. A cluster missing a newly-added CRD
 # then crashlooped agent-orchestrator with a bare `404 page not found`.

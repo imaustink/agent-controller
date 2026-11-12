@@ -273,7 +273,7 @@ into the workflow. One authorization owner, and no credentials in Temporal
 event history.
 
 ### B3. Chart
-New `orchestrator/charts/agent-controller/charts/temporal-engine` subchart (worker + gateway),
+New `orchestrator/charts/aktis/charts/temporal-engine` subchart (worker + gateway),
 `condition: temporal-engine.enabled`, default off. It takes a Temporal
 **address** — the platform already runs a cluster, so no server is bundled and
 no new stateful component appears. Add it to `values-ci-all.yaml` so

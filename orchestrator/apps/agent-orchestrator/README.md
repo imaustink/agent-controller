@@ -262,7 +262,7 @@ These are called out explicitly rather than silently glossed over — see
   `serviceAccountName` named in that tool's `Tool` CR (ADR 0010); that
   ServiceAccount must already exist in the target namespace (this app doesn't
   create tool ServiceAccounts, only its own — see
-  [orchestrator/charts/agent-controller/charts/agent-orchestrator](../../charts/agent-controller/charts/agent-orchestrator/) for the
+  [orchestrator/charts/aktis/charts/agent-orchestrator](../../charts/aktis/charts/agent-orchestrator/) for the
   orchestrator's own ServiceAccount/Role/RoleBinding).
 
 ## Commands

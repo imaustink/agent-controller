@@ -240,7 +240,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: orchestrator/charts/agent-controller/charts/temporal-engine
+        working-directory: orchestrator/charts/aktis/charts/temporal-engine
     steps:
       - uses: actions/checkout@v5
 

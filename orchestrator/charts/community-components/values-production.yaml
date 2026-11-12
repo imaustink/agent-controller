@@ -89,7 +89,7 @@ recipePublisher:
 # the Claude Code engine (claudeCodeSweAgent below) is now the SWE agent for
 # every path: the ai-triage/ai-review EventTriggers and the self-improvement
 # skill all point their agentRef at claude-code-swe-agent (the triggers are in
-# orchestrator/charts/agent-controller/values-production.yaml's extraManifests; the skill is
+# orchestrator/charts/aktis/values-production.yaml's extraManifests; the skill is
 # below). Re-enable only if reverting those back to opencode.
 #
 # History: cut over from PAT-only (Phase A) to per-user GitHub identity
@@ -113,7 +113,7 @@ opencodeSweAgent:
   githubAppSlug: k5s-bot
   # Per-user GitHub identity linking (docs/adr/0022) -- agent-orchestrator/
   # integration-gateway's identityLink.enabled are already on (see
-  # orchestrator/charts/agent-controller/values-production.yaml). Flipping this breaks
+  # orchestrator/charts/aktis/values-production.yaml). Flipping this breaks
   # every opencode-swe-agent request for every caller until they complete
   # the device-flow link. Now that the App creds above are also set, this
   # unlocks the dual-token pattern rather than pure per-user-token writes.
@@ -176,7 +176,7 @@ claudeCodeSweAgent:
   # by the deploy job's "Apply CRDs" step on every push
   # (.github/workflows/release.yml), since `helm upgrade` never updates CRDs on
   # an existing release. (2) integration-gateway's claudeAuth.enabled=true (see
-  # orchestrator/charts/agent-controller/values-production.yaml) so its `mode=login` PTY
+  # orchestrator/charts/aktis/values-production.yaml) so its `mode=login` PTY
   # flow is actually wired up, not just the setup-token one.
   #
   # Re-enabled 2026-07-24: a real triage run under this DID complete and
@@ -193,7 +193,7 @@ claudeCodeSweAgent:
 # GitHub identity (ADR 0022/0032) -- reuses the exact same identity-link
 # plumbing already enabled for opencodeSweAgent above (agent-orchestrator's
 # and integration-gateway's identityLink.enabled, see
-# orchestrator/charts/agent-controller/values-production.yaml), no new gateway/App
+# orchestrator/charts/aktis/values-production.yaml), no new gateway/App
 # configuration needed. Lighter-weight than delegating to opencode-swe-agent
 # for a quick, targeted GitHub read/write that doesn't need a clone or code
 # change.

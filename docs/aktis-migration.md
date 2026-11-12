@@ -12,7 +12,53 @@ and the new keys, so on an unmigrated cluster it starts with an empty catalog
 and every linked account (GitHub, Claude, Atlassian…) disappears until each user
 links it again.
 
-Namespace, release name, chart names and image paths do not change.
+Namespace, release name and image paths do not change. The system chart is now
+published as `oci://ghcr.io/imaustink/charts/aktis` (it was `.../charts/agent-controller`).
+Keep your release name (`agent-controller`), and the rendered resource names
+stay the same.
+
+## GitOps (Argo CD): no hand-applied steps
+
+If an Argo CD Application owns the release with `prune: true`, the upgrade is a
+Git change only. **Do not run `migrate-to-aktis.sh` against the cluster.**
+
+In one commit to the repository holding your Application and values:
+
+1. Point the Application at the new chart (`chart: aktis`, at or above the first
+   version shipping the `migrate-aktis` hook) and pin every image to that same
+   upstream commit or later. The hook runs `core-controller migrate-aktis`, which
+   older core-controller images don't have.
+2. Rename the group in your values: `agent-orchestrator.crdGroup`,
+   community-components' `crdApiVersion`, any `AGENT_CRD_GROUP` / `CRD_GROUP`
+   overrides, and the `apiVersion` of every `extraManifests` CR.
+3. Change the `apiVersion` of every CR you deploy from other Applications (KBs,
+   EventTriggers, …) to `core.aktis.ai/v1alpha1`. Those Applications cannot
+   apply until the new CRDs exist, so give them a sync `retry` policy. Then
+   merge order doesn't matter: they converge once the chart lands.
+
+On sync, Argo CD installs the `core.aktis.ai` CRDs from the chart, creates the
+new-group CRs from your manifests, and prunes the old-group CRs and CRDs. The
+chart's `migrate-aktis` PostSync hook Job does the two parts no manifest can:
+
+- adds the `aktis.ai` keys to the credential Secrets/ConfigMaps the old release
+  wrote, so linked accounts survive. It never overwrites a new key, and it
+  leaves the old keys in place for rollback.
+- strips old-domain finalizers (such as `corpora-exist` on a Connection) from
+  old-group CRs, so the pruned CRDs finish deleting instead of hanging in
+  `Terminating`.
+
+The hook is idempotent and does nothing on a cluster that never ran the old group.
+`core-controller.migrateAktis.namespaces` lists the namespaces it relabels and
+defaults to the release namespace. Set it if your credential Secrets live
+elsewhere.
+
+In-flight agent and tool runs belong to the old group and are not carried over.
+
+## Plain Helm / hand-applied CRs
+
+`helm upgrade` never installs CRDs from a chart's `crds/` directory, and nothing
+recreates CRs you applied by hand. In that case, use the script below. The chart's
+hook still runs post-upgrade, and both are idempotent.
 
 ## Before you start
 

@@ -32,7 +32,7 @@ decision:
    Agent's Job saw came from the Agent CR's own static `secretEnv`, baked in
    at deploy time and identical for every invocation.
 
-Login to the system (Open WebUI, via Google OIDC — `orchestrator/charts/agent-controller/
+Login to the system (Open WebUI, via Google OIDC — `orchestrator/charts/aktis/
 values-production.yaml`'s `identityResolver: oidc`) authenticates a Google
 identity, which cannot authenticate GitHub — there was no existing GitHub
 identity anywhere in the system to reuse. Getting a per-user GitHub credential

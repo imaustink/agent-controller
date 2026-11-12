@@ -99,7 +99,7 @@ reimplementation, but the same mechanism extended one CRD kind further.
    otherwise — same `if not identityLink.enabled` branching as
    `agent-opencode-swe.yaml`) and `templates/serviceaccount-github.yaml`
    (plain ServiceAccount, mirrors `serviceaccount-web-fetch.yaml`). No
-   changes needed to `orchestrator/charts/agent-controller` (the orchestrator/gateway
+   changes needed to `orchestrator/charts/aktis` (the orchestrator/gateway
    identity-link plumbing — `IDENTITY_LINK_GATEWAY_URL/TOKEN`,
    `GATEWAY_IDENTITY_LINK_TOKEN`, the orchestrator's `secrets: create/patch`
    RBAC — is already provider/CR-kind-agnostic and shared by any Agent or,

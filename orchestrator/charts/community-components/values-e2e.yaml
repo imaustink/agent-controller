@@ -1,6 +1,6 @@
 # values-e2e.yaml — community-components overlay for the e2e suite.
 #
-# Layered on top of values-minikube-demo.yaml (see orchestrator/charts/agent-controller/
+# Layered on top of values-minikube-demo.yaml (see orchestrator/charts/aktis/
 # values-e2e.yaml for the sibling overlay and the umbrella rationale).
 #
 # The demo profile triages with opencode-swe-agent, which declares no

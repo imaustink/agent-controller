@@ -24,7 +24,7 @@ metadata:
 #   - `helm dependency update` on the agent-orchestrator subchart itself
 #     (its own qdrant dependency; Helm doesn't recurse into file:// subcharts,
 #     so skipBuildDependencies below only covers each chart's own direct deps)
-#   - applying orchestrator/charts/agent-controller/charts/core-controller/crds/*.yaml
+#   - applying orchestrator/charts/aktis/charts/core-controller/crds/*.yaml
 #     --server-side (Helm's crds/ dir is install-only; upgrades never touch it)
 
 build:
@@ -100,12 +100,12 @@ deploy:
       # Deployed first: owns the CRDs that community-components' CRs need.
       # Skaffold's helm deployer runs releases in the order listed here.
       - name: agent-controller
-        chartPath: orchestrator/charts/agent-controller
+        chartPath: orchestrator/charts/aktis
         namespace: controller-agent
         createNamespace: true
         wait: true
         valuesFiles:
-          - orchestrator/charts/agent-controller/values-minikube-demo.yaml
+          - orchestrator/charts/aktis/values-minikube-demo.yaml
         # false = skaffold runs `helm dependency build` on this chart itself
         # before every deploy. It does NOT recurse into the nested
         # agent-orchestrator/qdrant dependency (file:// subcharts aren't
@@ -276,7 +276,7 @@ profiles:
       helm:
         releases:
           - name: agent-controller
-            chartPath: orchestrator/charts/agent-controller
+            chartPath: orchestrator/charts/aktis
             namespace: controller-agent
             createNamespace: true
             # Deliberately NOT `wait: true` here, unlike the default profile.
@@ -299,8 +299,8 @@ profiles:
             # instead of a deadline.
             wait: false
             valuesFiles:
-              - orchestrator/charts/agent-controller/values-minikube-demo.yaml
-              - orchestrator/charts/agent-controller/values-e2e.yaml
+              - orchestrator/charts/aktis/values-minikube-demo.yaml
+              - orchestrator/charts/aktis/values-e2e.yaml
             skipBuildDependencies: false
             setValueTemplates:
               agent-orchestrator.image.repository: "{{.IMAGE_REPO_agent_orchestrator}}"
