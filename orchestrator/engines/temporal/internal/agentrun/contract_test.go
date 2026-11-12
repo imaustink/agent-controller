@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	protocolv1 "github.com/imaustink/agent-controller/framework/protocol/go/aktis/protocol/v1"
+	protocolv1 "github.com/imaustink/aktis/framework/protocol/go/aktis/protocol/v1"
 
 	"github.com/aktisai/orchestrator/engines/temporal/internal/agentrun"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/messaging"

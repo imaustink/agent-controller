@@ -48,7 +48,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 
-	protocolv1 "github.com/imaustink/agent-controller/framework/protocol/go/aktis/protocol/v1"
+	protocolv1 "github.com/imaustink/aktis/framework/protocol/go/aktis/protocol/v1"
 )
 
 // Up-message types (agent → orchestrator).
