@@ -34,7 +34,7 @@ func TestRewriteKey(t *testing.T) {
 
 func TestRelabelAddsNewKeysAndKeepsExisting(t *testing.T) {
 	ctx := context.Background()
-	cs := fake.NewSimpleClientset(
+	cs := fake.NewClientset(
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
 			Name: "identity-link-github-abc", Namespace: "ns",
 			Labels: map[string]string{
@@ -107,7 +107,7 @@ func TestRelabelAddsNewKeysAndKeepsExisting(t *testing.T) {
 	}
 }
 
-func oldCR(plural, kind, ns, name string, finalizers ...string) *unstructured.Unstructured {
+func oldCR(kind, ns, name string, finalizers ...string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
 	u.SetAPIVersion(OldGroup + "/" + Version)
 	u.SetKind(kind)
@@ -124,10 +124,10 @@ func TestStripOldFinalizers(t *testing.T) {
 		listKinds[schema.GroupVersionResource{Group: OldGroup, Version: Version, Resource: p}] = p + "List"
 	}
 	dyn := dynfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds,
-		oldCR("connections", "Connection", "kb", "conf",
+		oldCR("Connection", "kb", "conf",
 			"controller-agent.dev/corpora-exist", "example.com/keep"),
-		oldCR("agentruns", "AgentRun", "ac", "run-1", "run.controller-agent.dev/cleanup"),
-		oldCR("agents", "Agent", "ac", "plain"),
+		oldCR("AgentRun", "ac", "run-1", "run.controller-agent.dev/cleanup"),
+		oldCR("Agent", "ac", "plain"),
 	)
 
 	n, err := StripOldFinalizers(ctx, dyn, nolog)

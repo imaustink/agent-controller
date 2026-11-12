@@ -27,7 +27,7 @@ func runMigrateAktis(args []string) int {
 	_ = fs.Parse(args)
 
 	var nss []string
-	for _, ns := range strings.Split(*namespaces, ",") {
+	for ns := range strings.SplitSeq(*namespaces, ",") {
 		if ns = strings.TrimSpace(ns); ns != "" {
 			nss = append(nss, ns)
 		}
