@@ -191,6 +191,13 @@ export interface ToolDescriptor {
    * identity requirement.
    */
   identityProviders?: string[];
+  /**
+   * Whose credential a call presents (docs/adr/0049 step 5): "delegated" (the
+   * caller's, the default) or "agent" (the providers' agentCredential). Only
+   * the Temporal engine implements "agent"; this engine refuses such a tool
+   * ({@link toolIdentityRefusal}).
+   */
+  defaultIdentity?: string;
   /** Optional coarse risk/cost tier, for future quota/authorization use. */
   tier?: string;
   /**

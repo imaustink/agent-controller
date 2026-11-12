@@ -50,6 +50,12 @@ type ToolDescriptor struct {
 	// ToolRunSpec.secretEnv rather than being baked into the Tool template.
 	IdentityProviders []string `json:"identityProviders,omitempty"`
 
+	// DefaultIdentity is whose credential a call presents on the resource
+	// providers above: "" or "delegated" for the caller's linked one,
+	// "agent" for each provider's IdentityProvider.spec.agentCredential
+	// (docs/adr/0049 step 5). Container Tools and MCPTools only.
+	DefaultIdentity string `json:"defaultIdentity,omitempty"`
+
 	// LocalExec, when set, means this descriptor came from a LocalTool CR
 	// (ADR 0014) rather than a Tool CR: it is never launched as a k8s Job,
 	// but dispatched in-pod to the matching per-language executor sidecar.

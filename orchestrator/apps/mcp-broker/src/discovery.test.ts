@@ -129,6 +129,13 @@ describe("discovery", () => {
     { name: "get_pull_request", description: "Get a PR" },
   ];
 
+  it("copies the server's defaultIdentity onto each MCPTool (docs/adr/0049 step 5)", async () => {
+    const server = makeServer([{ remoteToolName: "search_issues", allowedRoles: ["eng"] }], ["github"]);
+    server.spec.defaultIdentity = "agent";
+    await discoveryWith(k8s, new FakeMcpClient(liveTools)).runServer(binding(server, "svc"));
+    expect(k8s.tools.get(SEARCH_ISSUES_ID)!.spec.defaultIdentity).toBe("agent");
+  });
+
   it("materializes an exposed tool that the server advertises", async () => {
     const server = makeServer(
       [{ remoteToolName: "search_issues", allowedRoles: ["eng", "support"], tier: "standard" }],

@@ -59,6 +59,8 @@ export interface MCPServerSpec {
   secretEnv?: SecretEnvVar[];
   /** When non-empty, invocation requires a per-user delegated token (ADR 0045 §5). */
   identityProviders?: string[];
+  /** docs/adr/0049 step 5: "delegated" (default) or "agent"; copied onto each MCPTool. */
+  defaultIdentity?: string;
   exposure?: MCPToolExposure[];
 }
 
@@ -112,6 +114,7 @@ export interface MCPToolSpec {
   /** Tool-approval policy (ADR 0003), copied from the exposure entry — mirrors `tier`. */
   approval?: string;
   identityProviders?: string[];
+  defaultIdentity?: string;
 }
 
 export interface MCPToolCustomResource {

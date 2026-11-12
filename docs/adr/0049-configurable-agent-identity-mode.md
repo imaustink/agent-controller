@@ -355,10 +355,9 @@ HTTP/1.1 403 Forbidden
   rules keyed on the bot identity will see a different actor.
 - Non-GitHub resource providers (Atlassian, Slack) get `delegated` mode for
   free once their links carry `accountId`. `agent`/`hybrid` for them needs an
-  agent-side credential (`IdentityProvider.spec.agentCredential`, e.g. a
-  Secret or a minting strategy), which is deferred. Until then, validation
-  rejects `agent`/`hybrid` for an Agent whose resource providers have no agent
-  credential.
+  agent-side credential (`IdentityProvider.spec.agentCredential`). Step 5
+  adds it as a Secret, for Tools and MCPTools; a minting strategy (an App-like
+  exchange) is not built.
 
 ## Rollout (PR sequence)
 
@@ -390,8 +389,31 @@ Temporal gateway's verdicts.
      passed through agent-orchestrator to a synchronous webhook response, with
      the `identity_link_required` / `identity_ambiguous` error object.
    - `reply.github.onIdentityError`.
-5. **Later:** `IdentityProvider.spec.agentCredential` for non-GitHub
-   providers, and `defaultIdentity` on Tool / MCPTool.
+5. **Agent credentials and tool identity.**
+   - `IdentityProvider.spec.agentCredential.secretRef`: the operator's own
+     credential for a provider. The Secret must carry
+     `core.aktis.ai/agent-credential=true`; the label is the Secret owner's
+     opt-in, so whoever can write an IdentityProvider cannot have the engine
+     copy an unrelated Secret into a tool Job. The IdentityProvider
+     reconciler checks the Secret, key and label.
+   - `defaultIdentity: agent | delegated` on Tool, MCPServer and MCPTool
+     (copied server → tool by the broker). There is no `hybrid`: one tool
+     call has no read/write split to divide. `delegated` is the default and
+     the pre-0049 behaviour. Not allowed on an agent-backed Tool, whose
+     identity is its Agent's.
+   - In `agent` identity each resource provider presents its agentCredential
+     (container Tool: into the run's credential Secret under the provider's
+     env var; MCPTool: as the broker's delegated token). Runtime providers
+     stay the caller's, as on an Agent. A read-only turn still refuses a
+     github Tool. A Tool missing an agentCredential is not `Ready` and is
+     `misconfigured` at dispatch; it never falls back to the caller.
+   - Every identity-bearing tool call writes a `tool-authorization` audit
+     record naming the caller and whose credential each provider used.
+   - LangGraph refuses an `agent`-identity tool (the freeze below).
+   - **Still out of scope:** an Agent pod declaring a non-GitHub resource
+     provider. The Temporal engine's Agent providers remain the fixed
+     github/claude/claude-remote set; GitHub's agent credential is the App,
+     minted in the pod.
 
 ### The LangGraph engine is frozen, and fails closed
 

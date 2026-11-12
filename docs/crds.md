@@ -112,10 +112,11 @@ former JS `manifest.json` ([ADR 0009](adr/0009-static-build-time-tool-manifests.
   - `image` + `serviceAccountName` (string) — container launch target (the SA must pre-exist).
   - `args` / `env` / `secretEnv` / `resources` / `timeoutSeconds` — Job container config; `secretEnv` sources from Secret keys, never literals.
   - `identityProviders` ([]string) — `IdentityProvider` CRs the caller must have linked.
-  - **CEL:** exactly one of `agentRef` **or** (`image` **and** `serviceAccountName`).
+  - `defaultIdentity` (enum `agent;delegated`, default `delegated`) — whose credential a call presents on its resource providers: the caller's link, or each provider's `agentCredential` ([ADR 0049](adr/0049-configurable-agent-identity-mode.md) step 5). Temporal engine only; LangGraph refuses `agent`.
+  - **CEL:** exactly one of `agentRef` **or** (`image` **and** `serviceAccountName`); `defaultIdentity` not with `agentRef`.
 - **Status:** `Ready` condition.
 - **Referenced by:** `Skill.toolRefs`, `Agent.toolRefs`, `EventTrigger.target.toolRef`, `ToolRun.toolRef`.
-- **Acted on by:** `tool_controller.go` (validates the launch target); orchestrator (retrieval + dispatch).
+- **Acted on by:** `tool_controller.go` (validates the launch target, and in `agent` identity that every resource provider has an `agentCredential`); orchestrator (retrieval + dispatch).
 - **Sample:** `config/samples/tool_v1alpha1_tool.yaml`.
 
 ### LocalTool
@@ -312,6 +313,7 @@ it introduces an externally-controlled call path reachable by agents.
   - `url` (string, **required**, `^https?://`) — the broker's endpoint; `https` for an external server, `http` permitted for a cluster-internal one.
   - `secretEnv` — the shared-service **discovery** credential (for `tools/list`).
   - `identityProviders` ([]string) — the per-user **invocation** credential, presented on `tools/call`; fails **closed**, never falling back to the discovery credential.
+  - `defaultIdentity` (enum `agent;delegated`) — `agent` presents the providers' `agentCredential` instead of the caller's link (ADR 0049 step 5); copied onto each `MCPTool`.
   - `exposure` ([]MCPToolExposure, default-**deny**, keyed by `remoteToolName`) — each entry: `remoteToolName` (**required**), `expose` (*bool, default true), `allowedRoles` (**required**, ≥1), `toolID` (optional, must be a DNS-1123 name), `hidden`, `tier`.
 - **Status:** `discoveredTools` (the full advertised inventory, each marked `exposed`), `exposedTools` (count), `Ready`/Degraded conditions.
 - **Owns:** the derived `MCPTool` CRs (via `ownerReferences`, so deletion cascades).
@@ -326,7 +328,7 @@ kind is `mcpExec`, carrying what the broker needs to proxy one `tools/call`.
 `MCPServer`'s exposure map and reconciles any hand-edit back.
 
 - **Authored by:** system — the `mcp-broker` (owner-referenced to its `MCPServer`).
-- **Key spec fields:** `serverRef` (**required**), `remoteToolName` (**required**), `description` (**required**, RAG), `inputSchema` (the remote JSON Schema, verbatim), `allowedRoles` (**required**, ≥1, copied from the exposure entry), `hidden`, `tier`, `identityProviders` (copied from the server).
+- **Key spec fields:** `serverRef` (**required**), `remoteToolName` (**required**), `description` (**required**, RAG), `inputSchema` (the remote JSON Schema, verbatim), `allowedRoles` (**required**, ≥1, copied from the exposure entry), `hidden`, `tier`, `identityProviders` and `defaultIdentity` (copied from the server).
 - **Status:** `Ready` condition (the owning server still advertises this remote tool; the broker deletes it otherwise — the §6 existence rule).
 - **Referenced by:** `Skill.toolRefs` / `Agent.toolRefs`, by its catalog id (like any tool).
 - **Acted on by:** the **`mcp-broker`** — no in-cluster controller.
@@ -449,9 +451,10 @@ orchestrator so this is cluster config, watched like the catalog kinds
   - `label` (string, **required**) — human-facing name in link prompts; unique per namespace.
   - `flow` (enum `oauth;claude-cli-setup-token;claude-remote-login`, default `oauth`) — which link flow backs it ([ADR 0027](adr/0027-per-user-claude-oauth-setup-token-delegation.md)).
   - `crossEntryPoint` (bool) — key the credential by principal vs raw entry-point subject ([ADR 0030](adr/0030-authorization-preflight-outside-the-llm.md) §6).
+  - `agentCredential.secretRef` ({name, key}) — the operator's own credential for the provider, used by `agent`-identity Tools/MCPTools ([ADR 0049](adr/0049-configurable-agent-identity-mode.md) step 5). The Secret must be labelled `core.aktis.ai/agent-credential=true`, so an IdentityProvider alone cannot point the engine at an unrelated Secret.
 - **Status:** `conditions`.
 - **Referenced by:** `Tool`, `Agent`, `Connection`, `MCPServer`, `MCPTool` — all via `identityProviders`.
-- **Acted on by:** `identityprovider_controller.go` (uniqueness check only); the orchestrator reads it.
+- **Acted on by:** `identityprovider_controller.go` (uniqueness, and the `agentCredential` Secret's existence, key and opt-in label); the orchestrator reads it, and the Temporal worker reads `agentCredential` per agent-identity tool call.
 - **Sample:** none.
 
 ---

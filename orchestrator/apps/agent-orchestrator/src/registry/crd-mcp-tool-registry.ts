@@ -24,6 +24,8 @@ export interface MCPToolCustomResource {
     /** Tool-approval policy (ADR 0003): "never" | "always" | "auto". Sourced from the MCPServer exposure entry by the broker, exactly like `tier`. */
     approval?: string;
     identityProviders?: string[];
+    /** docs/adr/0049 step 5; copied from the owning MCPServer. */
+    defaultIdentity?: string;
   };
 }
 
@@ -139,6 +141,7 @@ export function toMCPToolDescriptor(cr: MCPToolCustomResource): ToolDescriptor |
     tier: spec.tier,
     approval: spec.approval,
     identityProviders: spec.identityProviders,
+    ...(spec.defaultIdentity ? { defaultIdentity: spec.defaultIdentity } : {}),
     mcpExec,
   };
 }

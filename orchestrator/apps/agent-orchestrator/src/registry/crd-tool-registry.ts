@@ -33,6 +33,8 @@ export interface ToolCustomResource {
      * gates an identity-linked Agent).
      */
     identityProviders?: string[];
+    /** docs/adr/0049 step 5; see ToolDescriptor.defaultIdentity. */
+    defaultIdentity?: string;
   };
 }
 
@@ -170,5 +172,6 @@ export function toToolDescriptor(cr: ToolCustomResource, namespace: string): Too
     ...(spec.identityProviders && spec.identityProviders.length > 0
       ? { identityProviders: spec.identityProviders }
       : {}),
+    ...(spec.defaultIdentity ? { defaultIdentity: spec.defaultIdentity } : {}),
   };
 }

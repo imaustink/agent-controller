@@ -127,9 +127,13 @@ func main() {
 	// The Secret writer is what keeps a credential out of Temporal's event
 	// history: the pre-flight writes values here and returns only a name.
 	var secretWriter authz.SecretWriter
+	// The agent-credential source reads IdentityProvider.spec.agentCredential
+	// for agent-identity Tools and MCPTools (docs/adr/0049 step 5).
+	var agentCredentials authz.AgentCredentialSource
 	if kubeCfg, err := kubeconfig.Load(); err == nil {
 		if dynamicClient, err := dynamic.NewForConfig(kubeCfg); err == nil {
 			secretWriter = authz.NewK8sSecretWriter(dynamicClient, getenv("CATALOG_NAMESPACE", "controller-agent"))
+			agentCredentials = authz.NewK8sAgentCredentials(dynamicClient, getenv("CATALOG_NAMESPACE", "controller-agent"))
 		} else {
 			log.Printf("no dynamic client for credential secrets: %v", err)
 		}
@@ -138,8 +142,9 @@ func main() {
 	}
 
 	authorize := &activities.AuthorizeActivities{Service: authz.New(authz.Deps{
-		Links:  links,
-		Secret: secretWriter,
+		Links:            links,
+		Secret:           secretWriter,
+		AgentCredentials: agentCredentials,
 		// One bounded hop. The workflow's own durable wait is what spans a
 		// human's attention; this only lets the gateway short-circuit it when
 		// the link lands immediately.
@@ -225,9 +230,10 @@ func main() {
 		// activity resolves the caller's delegated token and relays one call.
 		if mcpBrokerURL := os.Getenv("MCP_BROKER_URL"); mcpBrokerURL != "" {
 			mcp := &activities.MCPActivities{
-				Credentials: &activities.LinkedCredentials{Links: links},
-				BrokerURL:   mcpBrokerURL,
-				BrokerToken: os.Getenv("MCP_BROKER_TOKEN"),
+				Credentials:      &activities.LinkedCredentials{Links: links},
+				BrokerURL:        mcpBrokerURL,
+				BrokerToken:      os.Getenv("MCP_BROKER_TOKEN"),
+				AgentCredentials: agentCredentials,
 			}
 			w.RegisterActivityWithOptions(mcp.RunMCPTool,
 				activity.RegisterOptions{Name: activities.RunMCPToolActivityName})

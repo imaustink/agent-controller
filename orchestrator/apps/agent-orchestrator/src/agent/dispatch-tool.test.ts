@@ -116,6 +116,40 @@ describe("dispatchResolvedTool on a read-only turn", () => {
   });
 });
 
+describe("dispatchResolvedTool and tool identity (docs/adr/0049 step 5)", () => {
+  it("refuses an agent-identity MCP tool: the frozen engine implements only the caller's credential", async () => {
+    const mcpBrokerClient = fakeMCPBrokerClient();
+    const outcome = await dispatchResolvedTool(
+      { ...mcpTool, defaultIdentity: "agent" },
+      "{}",
+      {
+        containerToolLauncher: fakeContainerToolLauncher(),
+        jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: "x" }),
+        mcpBrokerClient,
+      },
+      { callerSubject: "alice" },
+    );
+    expect(outcome).toMatchObject({ ok: false });
+    expect((outcome as { error: string }).error).toContain("requires the Temporal engine");
+    expect(mcpBrokerClient.call).not.toHaveBeenCalled();
+  });
+
+  it("still dispatches an explicitly delegated MCP tool", async () => {
+    const mcpBrokerClient = fakeMCPBrokerClient();
+    const outcome = await dispatchResolvedTool(
+      { ...mcpTool, defaultIdentity: "delegated" },
+      "{}",
+      {
+        containerToolLauncher: fakeContainerToolLauncher(),
+        jobResultReceiver: fakeJobResultReceiver({ type: "succeeded", job_id: "j", result: "x" }),
+        mcpBrokerClient,
+      },
+      { callerSubject: "alice" },
+    );
+    expect(outcome.ok).toBe(true);
+  });
+});
+
 describe("dispatchResolvedTool", () => {
   it("rejects an agent-backed tool with a clean error (v1 scope cut)", async () => {
     const outcome = await dispatchResolvedTool(agentBackedTool, "do the thing", {

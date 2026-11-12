@@ -19,6 +19,7 @@ type toolSpec struct {
 	Approval          string   `json:"approval,omitempty"`
 	AgentRef          string   `json:"agentRef,omitempty"`
 	IdentityProviders []string `json:"identityProviders,omitempty"`
+	DefaultIdentity   string   `json:"defaultIdentity,omitempty"`
 }
 
 type agentSpec struct {
@@ -91,6 +92,7 @@ type mcpToolSpec struct {
 	Tier              string   `json:"tier,omitempty"`
 	Approval          string   `json:"approval,omitempty"`
 	IdentityProviders []string `json:"identityProviders,omitempty"`
+	DefaultIdentity   string   `json:"defaultIdentity,omitempty"`
 }
 
 type skillSpec struct {
@@ -126,6 +128,7 @@ func DecodeTool(obj *unstructured.Unstructured) (ToolDescriptor, error) {
 		Approval:          spec.Approval,
 		AgentRef:          spec.AgentRef,
 		IdentityProviders: spec.IdentityProviders,
+		DefaultIdentity:   spec.DefaultIdentity,
 	}, nil
 }
 
@@ -199,6 +202,7 @@ func DecodeMCPTool(obj *unstructured.Unstructured) (ToolDescriptor, error) {
 		Approval:          spec.Approval,
 		Hidden:            spec.Hidden,
 		IdentityProviders: spec.IdentityProviders,
+		DefaultIdentity:   spec.DefaultIdentity,
 		MCPExec: &MCPExecSpec{
 			ServerRef:      spec.ServerRef,
 			RemoteToolName: spec.RemoteToolName,
