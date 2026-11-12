@@ -38,6 +38,22 @@ const (
 	IdentityModeHybrid IdentityMode = "hybrid"
 )
 
+// ToolIdentityMode is the identity a single tool call acts as on the system
+// its identity providers reach (docs/adr/0049 step 5). A tool call has no
+// read/write split for "hybrid" to divide, so there are only two.
+// +kubebuilder:validation:Enum=agent;delegated
+type ToolIdentityMode string
+
+const (
+	// ToolIdentityModeAgent: the call uses each resource provider's
+	// IdentityProvider.spec.agentCredential, the operator's own credential.
+	// The caller needs no linked account; the audit record names them.
+	ToolIdentityModeAgent ToolIdentityMode = "agent"
+	// ToolIdentityModeDelegated: the call uses the caller's own linked
+	// credential. The default, and the only behaviour before step 5.
+	ToolIdentityModeDelegated ToolIdentityMode = "delegated"
+)
+
 // AgentObservability is an agent's trace settings (docs/adr/0050 §5).
 type AgentObservability struct {
 	// capture opts this agent's runs in to recording prompt and output text

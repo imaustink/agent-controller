@@ -89,6 +89,13 @@ type MCPToolSpec struct {
 	// expired or unresolvable token fails the call closed (ADR 0045 §5).
 	// +optional
 	IdentityProviders []string `json:"identityProviders,omitempty"`
+
+	// defaultIdentity is whose credential a call presents: "delegated" (the
+	// caller's, the default) or "agent" (the providers' agentCredential).
+	// Copied from the owning server like identityProviders (docs/adr/0049
+	// step 5).
+	// +optional
+	DefaultIdentity ToolIdentityMode `json:"defaultIdentity,omitempty"`
 }
 
 // MCPToolStatus defines the observed state of MCPTool.

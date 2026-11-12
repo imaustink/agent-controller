@@ -72,6 +72,7 @@ type ResourceRequirements struct {
 // both, enforced by the CEL rule below so a Skill's toolRefs can name either
 // kind interchangeably without the orchestrator guessing which launch path
 // applies.
+// +kubebuilder:validation:XValidation:rule="!has(self.defaultIdentity) || !has(self.agentRef)",message="defaultIdentity is set on the wrapped Agent, not on an agent-backed Tool"
 // +kubebuilder:validation:XValidation:rule="(has(self.agentRef) && !has(self.image) && !has(self.serviceAccountName)) || (!has(self.agentRef) && has(self.image) && has(self.serviceAccountName))",message="exactly one of agentRef or (image and serviceAccountName) must be set"
 type ToolSpec struct {
 	// description is fed to the orchestrator's embedder for RAG tool retrieval.
@@ -164,6 +165,18 @@ type ToolSpec struct {
 	// rest of the Tool catalog entry.
 	// +optional
 	IdentityProviders []string `json:"identityProviders,omitempty"`
+
+	// defaultIdentity is whose credential a call to this Tool presents on its
+	// resource providers (docs/adr/0049 step 5):
+	//   - delegated (the default): the caller's own linked credential.
+	//   - agent: each resource provider's IdentityProvider.spec.agentCredential.
+	//     The caller needs no linked account, so any role-permitted caller
+	//     acts with the operator's credential: keep allowedRoles tight. Every
+	//     call writes a "tool-authorization" audit record naming the caller.
+	// Runtime providers (the model credential: "claude", "claude-remote") are
+	// always the caller's.
+	// +optional
+	DefaultIdentity ToolIdentityMode `json:"defaultIdentity,omitempty"`
 }
 
 // ToolStatus defines the observed state of Tool.

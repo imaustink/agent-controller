@@ -47,6 +47,26 @@ const (
 	IdentityProviderFlowClaudeRemoteLogin IdentityProviderFlow = "claude-remote-login"
 )
 
+// IdentityProviderAgentCredential is the operator's own credential for a
+// provider: what a tool call in "agent" identity presents instead of the
+// caller's linked one (docs/adr/0049 step 5).
+type IdentityProviderAgentCredential struct {
+	// secretRef names the Secret and key holding the credential, in this
+	// IdentityProvider's namespace.
+	//
+	// The Secret must carry the label core.aktis.ai/agent-credential=true.
+	// Whoever can write an IdentityProvider can name any Secret here, and the
+	// engine copies its value into tool Jobs and MCP calls; the label means
+	// the Secret's own owner opted in to that, so an IdentityProvider alone
+	// cannot exfiltrate an unrelated Secret.
+	// +required
+	SecretRef SecretKeySelector `json:"secretRef"`
+}
+
+// AgentCredentialSecretLabel must be "true" on a Secret named by an
+// IdentityProvider's agentCredential (see IdentityProviderAgentCredential).
+const AgentCredentialSecretLabel = "core.aktis.ai/agent-credential"
+
 // IdentityProviderSpec defines the desired state of IdentityProvider.
 //
 // A Tool/Agent's `identityProviders` field only ever names a provider by this
@@ -97,6 +117,13 @@ type IdentityProviderSpec struct {
 	// itself (e.g. "github").
 	// +optional
 	CrossEntryPoint bool `json:"crossEntryPoint,omitempty"`
+
+	// agentCredential is the operator's own credential for this provider,
+	// used by a Tool, MCPServer or MCPTool whose defaultIdentity is "agent"
+	// (docs/adr/0049 step 5). Unset means nothing can act as the agent on
+	// this provider: an agent-identity tool that declares it is not Ready.
+	// +optional
+	AgentCredential *IdentityProviderAgentCredential `json:"agentCredential,omitempty"`
 }
 
 // IdentityProviderStatus defines the observed state of IdentityProvider.

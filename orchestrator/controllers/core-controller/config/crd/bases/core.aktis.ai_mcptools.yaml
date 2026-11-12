@@ -78,6 +78,16 @@ spec:
                 - always
                 - auto
                 type: string
+              defaultIdentity:
+                description: |-
+                  defaultIdentity is whose credential a call presents: "delegated" (the
+                  caller's, the default) or "agent" (the providers' agentCredential).
+                  Copied from the owning server like identityProviders (docs/adr/0049
+                  step 5).
+                enum:
+                - agent
+                - delegated
+                type: string
               description:
                 description: |-
                   description is fed to the orchestrator's embedder for RAG tool retrieval —
