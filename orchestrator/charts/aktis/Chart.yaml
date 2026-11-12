@@ -1,7 +1,7 @@
 apiVersion: v2
-name: agent-controller
+name: aktis
 description: >-
-  The agent-controller system chart: the parent orchestrator (RAG skill/tool
+  The Aktis system chart: the parent orchestrator (RAG skill/tool
   selection + ToolRun launcher), the core-controller operator (Tool/Skill/
   Agent/ToolRun/AgentRun/LocalTool CRDs), and optional infra (Redis session
   store, Qdrant vector store, NATS, Open WebUI chat front-end) -- each a
@@ -24,7 +24,7 @@ type: application
 # label env vars removed. (0.7.0 also shipped a tokenreviews ClusterRole for
 # cron ticks; the CI deployer cannot write ClusterRoles, so the gateway now
 # verifies tick tokens against the issuer keys and the ClusterRole is gone.)
-version: 0.7.3
+version: 0.8.0
 appVersion: "0.1.0"
 home: https://github.com/imaustink/agent-controller
 sources:

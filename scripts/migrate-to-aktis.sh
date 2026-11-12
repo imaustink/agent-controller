@@ -2,6 +2,10 @@
 # migrate-to-aktis.sh — move a live cluster from the core.controller-agent.dev
 # API group to core.aktis.ai (docs/aktis-migration.md, ADR 0047).
 #
+# NOT for GitOps-managed releases: under Argo CD the chart's migrate-aktis
+# PostSync hook does the in-cluster part, and everything else is a Git change.
+# This script is for plain-Helm installs and hand-applied CRs.
+#
 # Usage:  ./scripts/migrate-to-aktis.sh copy    [--dry-run]   # BEFORE the upgrade
 #         ./scripts/migrate-to-aktis.sh cleanup [--dry-run]   # AFTER it is healthy
 #

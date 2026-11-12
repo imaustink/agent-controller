@@ -31,7 +31,7 @@ design and milestone plan.
 | `internal/callertools` | Consumer-supplied tools over the OpenAI facade (upstream ADR 0035). |
 | `internal/temporal/activities` | All non-deterministic work (LLM calls; later: Qdrant, ToolRun CRs, identity). |
 | `internal/llm` | Minimal OpenAI-compatible chat client (base URL overridable). |
-| `orchestrator/charts/agent-controller/charts/temporal-engine` | Helm subchart (repo root): worker, gateway, catalog-sync. Off by default; takes a Temporal address rather than bundling a server. |
+| `orchestrator/charts/aktis/charts/temporal-engine` | Helm subchart (repo root): worker, gateway, catalog-sync. Off by default; takes a Temporal address rather than bundling a server. |
 
 ## How a turn flows
 
@@ -160,7 +160,7 @@ Enabling it is deliberately two steps, so the engine can be deployed and
 watched before any turn depends on it:
 
 ```yaml
-# orchestrator/charts/agent-controller/values.yaml (or your overlay)
+# orchestrator/charts/aktis/values.yaml (or your overlay)
 temporal-engine:
   enabled: true                                   # 1. deploy worker + gateway
   temporal: { address: temporal-frontend.temporal.svc:7233 }

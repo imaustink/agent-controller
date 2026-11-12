@@ -75,5 +75,5 @@ as ADR 0009, but the refresh no longer requires an image rebuild.
   (charts/tool-controller) before the orchestrator is useful.
 - CRD changes require the regeneration chain: edit Go types → `make
   generate manifests` (the latter also syncs the CRD yaml into
-  `orchestrator/charts/agent-controller/charts/core-controller/crds/`, which is generated
+  `orchestrator/charts/aktis/charts/core-controller/crds/`, which is generated
   and not committed) → rebuild controller image.

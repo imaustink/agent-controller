@@ -46,9 +46,9 @@ help: ## Display this help.
 ## Path to the core-controller Helm subchart's crds/ dir (untracked -- Helm's
 ## crds/ directory is install-only and must be populated from the generated
 ## CRDs below before `helm install`/`helm template`/`helm package` will see
-## current schemas; see orchestrator/charts/agent-controller/charts/core-controller/README
+## current schemas; see orchestrator/charts/aktis/charts/core-controller/README
 ## and docs/adr/0010).
-CHART_CRDS_DIR ?= ../../charts/agent-controller/charts/core-controller/crds
+CHART_CRDS_DIR ?= ../../charts/aktis/charts/core-controller/crds
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects, then sync them into the Helm chart's crds/ dir.
@@ -123,11 +123,11 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+	go build -o bin/manager ./cmd
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go
+	go run ./cmd
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.

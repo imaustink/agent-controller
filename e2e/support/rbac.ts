@@ -6,7 +6,7 @@ import { parseAllDocuments } from "yaml";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const CONTROLLER_DIR = join(REPO_ROOT, "orchestrator", "controllers", "core-controller");
-const CHART_DIR = join(REPO_ROOT, "orchestrator", "charts", "agent-controller", "charts", "core-controller");
+const CHART_DIR = join(REPO_ROOT, "orchestrator", "charts", "aktis", "charts", "core-controller");
 
 /** The ServiceAccount the deployed core-controller runs as. */
 export const CORE_CONTROLLER_SA = "system:serviceaccount:controller-agent:core-controller";

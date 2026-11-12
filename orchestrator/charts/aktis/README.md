@@ -19,7 +19,7 @@ own release on top of this one.
 ## Layout
 
 ```
-orchestrator/charts/agent-controller/
+orchestrator/charts/aktis/
 ├── Chart.yaml                  # 4 dependencies (2 local file://, 2 remote: open-webui, nats)
 ├── values.yaml                 # per-subchart passthrough + enable toggles
 ├── values-minikube-demo.yaml   # the local minikube demo overrides (not packaged)
@@ -59,8 +59,8 @@ Helm does **not** recurse into nested subchart dependencies, so fetch the
 orchestrator subchart's Qdrant first, then this chart's own dependencies:
 
 ```bash
-helm dependency update orchestrator/charts/agent-controller/charts/agent-orchestrator   # qdrant
-helm dependency update orchestrator/charts/agent-controller                             # open-webui, nats
+helm dependency update orchestrator/charts/aktis/charts/agent-orchestrator   # qdrant
+helm dependency update orchestrator/charts/aktis                             # open-webui, nats
 ```
 
 > `helm dependency update` also writes redundant local subchart `.tgz` files
@@ -72,8 +72,8 @@ helm dependency update orchestrator/charts/agent-controller                     
 ## Install
 
 ```bash
-helm install agent-controller orchestrator/charts/agent-controller -n controller-agent --create-namespace \
-  -f orchestrator/charts/agent-controller/values-minikube-demo.yaml
+helm install agent-controller orchestrator/charts/aktis -n controller-agent --create-namespace \
+  -f orchestrator/charts/aktis/values-minikube-demo.yaml
 ```
 
 Then install the catalog on top: see
@@ -85,7 +85,7 @@ This chart is also published as an OCI artifact to GHCR on every merge to
 `main` that touches `orchestrator/charts/**`:
 
 ```bash
-helm install agent-controller oci://ghcr.io/imaustink/charts/agent-controller \
+helm install agent-controller oci://ghcr.io/imaustink/charts/aktis \
   --version 0.1.0 -n controller-agent --create-namespace -f my-values.yaml
 ```
 
@@ -96,8 +96,8 @@ Always upgrade with the same values file so previously-set overrides aren't
 dropped (see the header comment in `values-minikube-demo.yaml`):
 
 ```bash
-helm upgrade agent-controller orchestrator/charts/agent-controller -n controller-agent \
-  -f orchestrator/charts/agent-controller/values-minikube-demo.yaml
+helm upgrade agent-controller orchestrator/charts/aktis -n controller-agent \
+  -f orchestrator/charts/aktis/values-minikube-demo.yaml
 ```
 
 ## Notable behaviors

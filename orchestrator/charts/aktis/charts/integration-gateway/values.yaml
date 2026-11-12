@@ -205,7 +205,7 @@ identityLink:
   #
   # Reuses the SAME Redis instance agent-orchestrator's conversation-session store uses
   # (docs/adr/0016) -- integration-gateway is a sibling subchart under the
-  # same parent (orchestrator/charts/agent-controller), deployed into the same
+  # same parent (orchestrator/charts/aktis), deployed into the same
   # release/namespace, so agent-orchestrator's Redis Service
   # ("<agent-orchestrator fullname>-redis", see
   # charts/agent-orchestrator/templates/redis.yaml) is trivially reachable
@@ -221,7 +221,7 @@ identityLink:
   # https://<this gateway's public host>/identity-link/github/callback
   # (see src/server.ts's handleRequest for the route). Same
   # externally-registered-value-must-match-verbatim discipline as
-  # GOOGLE_REDIRECT_URI in orchestrator/charts/agent-controller/values.yaml /
+  # GOOGLE_REDIRECT_URI in orchestrator/charts/aktis/values.yaml /
   # values-production.yaml (Open WebUI's Google SSO callback). No default on
   # purpose -- this MUST be set explicitly by whoever deploys with the
   # authcode flow enabled.

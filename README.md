@@ -212,7 +212,7 @@ Two independent Helm charts cover the full system:
 
 | Chart | What it installs |
 | ----- | ---------------- |
-| [orchestrator/charts/agent-controller](orchestrator/charts/agent-controller/) | The system: CRDs + core-controller operator Deployment/RBAC, the agent-orchestrator Deployment/Services, and optional Redis/Qdrant/NATS/Open WebUI |
+| [orchestrator/charts/aktis](orchestrator/charts/aktis/) | The system: CRDs + core-controller operator Deployment/RBAC, the agent-orchestrator Deployment/Services, and optional Redis/Qdrant/NATS/Open WebUI |
 | [orchestrator/charts/community-components](orchestrator/charts/community-components/) | The catalog: Tool/Skill/Agent custom resources (recipe-scraper, recipe-publisher, recipe-refining skill, opencode-swe-agent) |
 
 Install `agent-controller` first (it owns the CRDs), then
@@ -228,7 +228,7 @@ controller launches them as one-shot Jobs via `ToolRun`/`AgentRun` CRs.
 From a local checkout:
 
 ```bash
-helm install agent-controller orchestrator/charts/agent-controller -n controller-agent --create-namespace
+helm install agent-controller orchestrator/charts/aktis -n controller-agent --create-namespace
 helm install community-components orchestrator/charts/community-components -n controller-agent
 ```
 
@@ -238,7 +238,7 @@ on every merge to `main` that touches `orchestrator/charts/**` (see
 so you can install without cloning the repo:
 
 ```bash
-helm install agent-controller oci://ghcr.io/imaustink/charts/agent-controller --version 0.1.0 \
+helm install agent-controller oci://ghcr.io/imaustink/charts/aktis --version 0.1.0 \
   -n controller-agent --create-namespace
 helm install community-components oci://ghcr.io/imaustink/charts/community-components --version 0.1.0 \
   -n controller-agent

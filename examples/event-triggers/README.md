@@ -12,7 +12,7 @@ kubectl apply -n controller-agent -k examples/event-triggers   # all of them
 ```
 
 To ship them with a Helm release instead, paste them into the agent-controller
-chart's `extraManifests`, which is how `orchestrator/charts/agent-controller/values-production.yaml`
+chart's `extraManifests`, which is how `orchestrator/charts/aktis/values-production.yaml`
 installs production's GitHub triggers. `extraManifests` runs each entry through
 `tpl`, so escape every `{{placeholder}}` as ``{{`{{placeholder}}`}}``.
 

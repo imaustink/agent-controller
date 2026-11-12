@@ -1,0 +1,147 @@
+{{- if .Values.migrateAktis.enabled }}
+{{- /*
+Aktis rename migration (docs/aktis-migration.md, ADR 0047 §6), run in-cluster
+so a GitOps upgrade from the core.controller-agent.dev release needs no
+hand-applied steps. The chart ships the core.aktis.ai CRDs and Argo CD prunes
+the old-group objects; this post-install/post-upgrade hook (Argo CD: PostSync)
+does the two things no manifest can:
+  - adds the aktis.ai keys to credential Secrets/ConfigMaps the old release
+    wrote, so linked accounts survive (old keys stay, for rollback);
+  - strips old-domain finalizers from old-group CRs, so pruning the old CRDs
+    completes instead of hanging in Terminating.
+Idempotent and a no-op on a cluster that never ran the old group. The RBAC
+below is plain (non-hook) so it exists before the PostSync Job runs.
+*/}}
+{{- $name := printf "%s-migrate-aktis" (include "core-controller.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- $namespaces := .Values.migrateAktis.namespaces | default (list .Release.Namespace) }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "core-controller.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "core-controller.labels" . | nindent 4 }}
+rules:
+  # The pre-Aktis group, deliberately: this Job releases its finalizers.
+  - apiGroups: ["core.controller-agent.dev"]
+    resources:
+      - agents
+      - tools
+      - skills
+      - localtools
+      - identityproviders
+      - eventsources
+      - eventtriggers
+      - connections
+      - corpora
+      - knowledgebases
+      - mcpservers
+      - agentruns
+      - toolruns
+      - mcptools
+      - integrationroutes
+    verbs: ["list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "core-controller.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+{{- range $ns := $namespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "core-controller.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "core-controller.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "core-controller.labels" . | nindent 4 }}
+  annotations:
+    # Argo CD maps these to PostSync / BeforeHookCreation+HookSucceeded.
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      # Not core-controller's selector labels: the Deployment's Services must
+      # not select this pod.
+      labels:
+        app.kubernetes.io/name: {{ $name }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: migrate-aktis
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ $name }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate-aktis
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - migrate-aktis
+            - --namespaces={{ join "," $namespaces }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

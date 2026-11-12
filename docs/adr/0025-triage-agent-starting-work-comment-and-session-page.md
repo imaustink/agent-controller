@@ -19,7 +19,7 @@ server.ts`) only ever posted one comment, after `OrchestratorClient.invoke`'s
 full accept-then-poll cycle completed (up to `GATEWAY_POLL_TIMEOUT_MS`, 15
 minutes by default) — nothing was posted at trigger time, and there was no
 interactive surface: the only existing chat-capable UI is the optional Open
-WebUI deployment (`orchestrator/charts/agent-controller`'s `openwebui` dependency) in
+WebUI deployment (`orchestrator/charts/aktis`'s `openwebui` dependency) in
 front of `agent-orchestrator`'s OpenAI-compatible facade (ADR 0007/0012), but
 its `X-OpenWebUI-Chat-Id` is a chat id *it* generates, not one this gateway
 can mint or deep-link into for a specific GitHub-issue session.

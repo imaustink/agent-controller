@@ -12,7 +12,7 @@
 # flags and no `-f`/`--reuse-values` REPLACES the entire computed values tree
 # with just those flags on the chart defaults -- it does NOT merge with the
 # previous revision. Always upgrade with:
-#   helm upgrade agent-controller orchestrator/charts/agent-controller -n controller-agent -f orchestrator/charts/agent-controller/values-minikube-demo.yaml
+#   helm upgrade agent-controller orchestrator/charts/aktis -n controller-agent -f orchestrator/charts/aktis/values-minikube-demo.yaml
 # (edit this file first for any new setting, then run the same command --
 # never hand-assemble a fresh pile of `--set` flags from memory).
 #

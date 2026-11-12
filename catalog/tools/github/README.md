@@ -133,6 +133,6 @@ To test the actual identity-delegation path end-to-end, enable
 `githubTool.enabled=true` (and `githubTool.identityLink.enabled=true`) in
 `orchestrator/charts/community-components`, alongside `identityLink.enabled=true` on both
 `agent-orchestrator` and `integration-gateway` (see
-`orchestrator/charts/agent-controller/values-production.yaml`), and invoke it as a real
+`orchestrator/charts/aktis/values-production.yaml`), and invoke it as a real
 `ToolRun`/Job in a cluster (e.g. minikube) after linking a GitHub account
 via chat.

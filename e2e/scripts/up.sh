@@ -8,7 +8,7 @@
 # which produced a confusing failure the first time through:
 #
 #   1. Helm does not recurse into file:// subcharts. `skaffold run` builds
-#      orchestrator/charts/agent-controller's dependencies but NOT agent-orchestrator's own
+#      orchestrator/charts/aktis's dependencies but NOT agent-orchestrator's own
 #      qdrant dependency, so qdrant is silently never deployed and the
 #      orchestrator crashloops on "qdrant startup check failed" while Helm
 #      reports the far less helpful "context deadline exceeded".
@@ -58,7 +58,7 @@ fi
 step "Fetching nested subchart dependencies (Helm won't recurse into these)..."
 # The top-level chart's deps are handled by skaffold (skipBuildDependencies:
 # false). This is the nested one it cannot see -- see note 1 in the header.
-helm dependency update "$REPO_ROOT/orchestrator/charts/agent-controller/charts/agent-orchestrator" >/dev/null
+helm dependency update "$REPO_ROOT/orchestrator/charts/aktis/charts/agent-orchestrator" >/dev/null
 echo "  ✓ qdrant"
 
 step "Applying CRDs..."
@@ -68,7 +68,7 @@ step "Applying CRDs..."
 # while listing that resource. This is exactly how `integrationroutes` came to
 # be missing here: every other CRD existed, from an older install.
 #
-# NOTE: dev-up.sh applies these from orchestrator/charts/agent-controller/charts/
+# NOTE: dev-up.sh applies these from orchestrator/charts/aktis/charts/
 # core-controller/crds/, which no longer exists. The generated bases below are
 # the real source.
 for crd in "$REPO_ROOT"/orchestrator/controllers/core-controller/config/crd/bases/*.yaml; do
@@ -175,8 +175,8 @@ step "Selecting the agent engine: $ENGINE..."
 if [[ "$ENGINE" == "langgraph" ]]; then
   # --reuse-values keeps every value skaffold set (image tags included);
   # an empty agentEngine leaves AGENT_ENGINE unset, which IS LangGraph
-  # (orchestrator/charts/agent-controller/values.yaml "TO ROLL BACK").
-  helm -n "$NS" upgrade agent-controller "$REPO_ROOT/charts/agent-controller" \
+  # (orchestrator/charts/aktis/values.yaml "TO ROLL BACK").
+  helm -n "$NS" upgrade agent-controller "$REPO_ROOT/charts/aktis" \
     --reuse-values --set-string agent-orchestrator.config.agentEngine= >/dev/null
   kubectl -n "$NS" rollout status deploy/agent-orchestrator --timeout=300s >/dev/null
 fi

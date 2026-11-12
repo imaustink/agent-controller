@@ -44,7 +44,7 @@ function describeMissing(label: string, missing: Grant[]): string {
     ...missing.map((g) => `  - ${g}`),
     "",
     "Regenerate with `make manifests` in orchestrator/controllers/core-controller, then mirror the",
-    "result into orchestrator/charts/agent-controller/charts/core-controller/templates/rbac.yaml.",
+    "result into orchestrator/charts/aktis/charts/core-controller/templates/rbac.yaml.",
   ].join("\n");
 }
 

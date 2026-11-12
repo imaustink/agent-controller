@@ -35,7 +35,7 @@ async function safeText(res: Response): Promise<string> {
 /**
  * Queries the in-cluster SearXNG instance's JSON API
  * (https://docs.searxng.org/, `?format=json`, enabled specifically for this
- * caller -- see orchestrator/charts/agent-controller/templates/searxng.yaml) and returns
+ * caller -- see orchestrator/charts/aktis/templates/searxng.yaml) and returns
  * its results, narrowed to title/url/content.
  */
 export async function search(query: string, cfg: SearxngConfig): Promise<SearchResult[]> {

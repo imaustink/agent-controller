@@ -3,7 +3,7 @@
 #
 # These are normal Helm-managed resources -- install this chart AFTER the
 # agent-controller chart (which owns the Tool/Skill/Agent/ToolRun/AgentRun/
-# LocalTool CRDs, from orchestrator/charts/agent-controller/charts/core-controller/crds/).
+# LocalTool CRDs, from orchestrator/charts/aktis/charts/core-controller/crds/).
 # `helm uninstall` on this release cleanly removes every CR it created.
 
 enabled: true

@@ -202,7 +202,7 @@ make install
 Or apply the synced copy in the Helm chart directly:
 
 ```sh
-kubectl apply -f ../../charts/agent-controller/charts/core-controller/crds/
+kubectl apply -f ../../charts/aktis/charts/core-controller/crds/
 ```
 
 > **Note:** That `crds/` directory is generated, not committed (see its
@@ -211,7 +211,7 @@ kubectl apply -f ../../charts/agent-controller/charts/core-controller/crds/
 > `crds/` directory is also install-only — `helm upgrade` never updates CRDs
 > already on the cluster. After any `*_types.go` change, run `make
 > manifests`, then `kubectl apply -f
-> ../../charts/agent-controller/charts/core-controller/crds/<changed>.yaml`
+> ../../charts/aktis/charts/core-controller/crds/<changed>.yaml`
 > by hand.
 
 ### Deploying
