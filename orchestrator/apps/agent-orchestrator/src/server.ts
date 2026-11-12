@@ -37,7 +37,8 @@ import {
 } from "./openai/chat-completions.js";
 import { SENDER_ASSERTION_HEADER, verifySenderClaims, type SenderClaims } from "./rbac/sender-assertion.js";
 import type { IdentityRefusal } from "./engine/temporal-engine.js";
-import { TRACEPARENT_HEADER, traceIdOf } from "./traceparent.js";
+import { TRACEPARENT_HEADER } from "./traceparent.js";
+import { startSpan, type TraceSpan } from "./telemetry.js";
 import type { TaskCompleter } from "./openai/task-completer.js";
 import { withHeartbeat } from "./openai/with-heartbeat.js";
 import { renderTurnEvent, type TurnEvent, type TurnEventKind } from "@aktis/messaging";
@@ -940,7 +941,30 @@ export class InvokeServer {
     }
   }
 
+  /**
+   * docs/adr/0050 §4: one server span per `/invoke`, continuing the caller's
+   * traceparent (integration-gateway's delivery span) when valid. The turn --
+   * and the engine calls it makes -- carry THIS span's context, so the
+   * engine's spans nest under it. The span ends with the answer (202/403/...),
+   * not with the turn, which outlives it.
+   */
   private async handleInvoke(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const span = startSpan("POST /invoke", headerValue(req.headers[TRACEPARENT_HEADER]), {
+      kind: "server",
+      attributes: { "http.request.method": "POST", "http.route": "/invoke" },
+    });
+    try {
+      await this.handleInvokeTraced(req, res, span);
+    } catch (error) {
+      span.fail("internal_error");
+      throw error;
+    } finally {
+      span.set({ "http.response.status_code": res.statusCode });
+      span.end();
+    }
+  }
+
+  private async handleInvokeTraced(req: IncomingMessage, res: ServerResponse, span: TraceSpan): Promise<void> {
     const rawBody = await readBody(req);
 
     let request: string;
@@ -948,7 +972,7 @@ export class InvokeServer {
     let identityLinkFlow: "device" | "authcode" | undefined;
     let senderLogin: string | undefined;
     let senderClaims: SenderClaims | undefined;
-    const traceparent = traceIdOf(headerValue(req.headers[TRACEPARENT_HEADER])) ? headerValue(req.headers[TRACEPARENT_HEADER]) : undefined;
+    const traceparent = span.traceparent;
     let envelope: Envelope | undefined;
     // Consumer-supplied tools (docs/adr/0035), accepted here too so a
     // programmatic `/invoke` caller has parity with the chat facade. The raw
@@ -1018,6 +1042,7 @@ export class InvokeServer {
       const selection = this.eventTriggerRegistry?.select(envelope, sessionId ? { callerSessionId: sessionId } : {}) ?? {
         status: "ignored" as const,
       };
+      span.set({ "aktis.event.outcome": selection.status });
       if (selection.status === "ignored") {
         // A clean no-op: no turn, no invocation record, and deliberately no
         // RAG fallback -- a Stripe or CI webhook that matches nothing must not
@@ -1087,9 +1112,11 @@ export class InvokeServer {
         ...(trigger.readOnly ? { readOnly: true } : {}),
         ...(Object.keys(trigger.params).length > 0 ? { params: trigger.params } : {}),
         ...(trigger.identity ? { identityOverride: trigger.identity } : {}),
-        ...(traceparent ? { traceparent } : {}),
+        traceparent,
       } as AgentGraphInput);
       if (refusal) {
+        span.set({ "aktis.identity_error": refusal.error.code });
+        span.fail(refusal.error.code);
         res.writeHead(403, { "content-type": "application/json" }).end(
           JSON.stringify({ ...refusal, error: { ...refusal.error, ...(triggerResponse ? { trigger: triggerResponse } : {}) } }),
         );
@@ -1136,7 +1163,7 @@ export class InvokeServer {
     ).then(async (graphInput) => {
       if (targetRepository) graphInput.targetRepository = targetRepository;
       if (senderClaims) graphInput.senderClaims = senderClaims;
-      if (traceparent) graphInput.traceparent = traceparent;
+      graphInput.traceparent = traceparent;
       // Persist the turn's read-only mode BEFORE anything launches (see
       // `setSessionReadOnly`): a read-only turn's, and a trigger turn's
       // either way. Awaited, and a failure fails the turn: the flag's job is
@@ -1228,6 +1255,7 @@ export class InvokeServer {
     // what already-rendered reply side-effects (docs/event-triggers.md §5) --
     // integration-gateway's reply adapters act on exactly this, never on
     // anything they re-derive from the event.
+    span.set({ "aktis.invocation_id": id, ...(triggerResponse ? { "aktis.trigger": triggerResponse.name } : {}) });
     res.writeHead(202, { "content-type": "application/json", location: `/invoke/${id}` }).end(
       JSON.stringify({ id, status: "pending", ...(triggerResponse ? { trigger: triggerResponse } : {}) }),
     );

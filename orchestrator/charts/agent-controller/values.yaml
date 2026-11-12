@@ -21,7 +21,8 @@
 global:
   knowledgeBaseNamespace: ""
   # Agent observability (docs/adr/0050): the ONE switch. Global because every
-  # emitter (the engine subcharts, agent pods) must learn the collector's
+  # emitter (the engine subcharts, agent-orchestrator, integration-gateway,
+  # agent pods) must learn the collector's
   # address from it. Configure where traces go under `observability:` below.
   observability:
     enabled: false

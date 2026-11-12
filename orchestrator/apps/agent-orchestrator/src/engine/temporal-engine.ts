@@ -1,6 +1,7 @@
 import { SENDER_ASSERTION_HEADER, mintSenderAssertion } from "../rbac/sender-assertion.js";
 import { CALLER_IDENTITY_HEADER, mintCallerIdentityAssertion } from "../rbac/caller-identity-assertion.js";
-import { TRACEPARENT_HEADER, nextTraceparent } from "../traceparent.js";
+import { TRACEPARENT_HEADER } from "../traceparent.js";
+import { startSpan } from "../telemetry.js";
 import { DISPATCH_ASSERTION_HEADER, mintDispatchAssertion } from "../rbac/dispatch-assertion.js";
 import type { AgentGraphInput, AgentGraphLike } from "../server.js";
 import type { AgentState } from "../agent/graph.js";
@@ -349,12 +350,30 @@ export class TemporalEngine implements AgentGraphLike {
   }
 
   private async start(input: AgentGraphInput, caller: ForwardedCaller | undefined): Promise<string> {
-    const { headers, body } = this.invokeRequest(input, caller);
-    const res = await this.fetchImpl(`${this.baseUrl}/invoke`, { method: "POST", headers, body });
-    if (!res.ok) {
-      throw new Error(`temporal engine /invoke failed: ${res.status}`);
+    // docs/adr/0050 §4: a client span per engine call, a child of the turn's
+    // trace (or the root of a new one); the engine's server span nests under it.
+    const hop = startSpan("engine POST /invoke", input.traceparent, {
+      kind: "client",
+      attributes: { "http.request.method": "POST", "http.route": "/invoke", "aktis.trigger": input.triggerName },
+    });
+    let status: number | undefined;
+    try {
+      const { headers, body } = this.invokeRequest(input, caller, hop.traceparent);
+      const res = await this.fetchImpl(`${this.baseUrl}/invoke`, { method: "POST", headers, body });
+      status = res.status;
+      hop.set({ "http.response.status_code": res.status });
+      if (!res.ok) {
+        throw new Error(`temporal engine /invoke failed: ${res.status}`);
+      }
+      const id = ((await res.json()) as InvokeAccepted).id;
+      hop.set({ "aktis.invocation_id": id });
+      return id;
+    } catch (error) {
+      hop.fail(status === undefined ? "engine_unreachable" : `http_${status}`);
+      throw error;
+    } finally {
+      hop.end();
     }
-    return ((await res.json()) as InvokeAccepted).id;
   }
 
   /**
@@ -367,22 +386,36 @@ export class TemporalEngine implements AgentGraphLike {
    */
   async checkIdentity(input: AgentGraphInput): Promise<IdentityRefusal | undefined> {
     if (input.triggerName && !this.options.senderAssertionSecret) return undefined;
-    const { headers, body } = this.invokeRequest(input, undefined);
+    const hop = startSpan("engine POST /invoke/check", input.traceparent, {
+      kind: "client",
+      attributes: { "http.request.method": "POST", "http.route": "/invoke/check", "aktis.trigger": input.triggerName },
+    });
+    const { headers, body } = this.invokeRequest(input, undefined, hop.traceparent);
     try {
       const res = await this.fetchImpl(`${this.baseUrl}/invoke/check`, { method: "POST", headers, body });
+      hop.set({ "http.response.status_code": res.status });
       if (res.status !== 403) return undefined;
       const parsed = (await res.json()) as IdentityRefusal;
-      return typeof parsed?.error?.code === "string" && typeof parsed.error.message === "string" ? parsed : undefined;
+      if (typeof parsed?.error?.code !== "string" || typeof parsed.error.message !== "string") return undefined;
+      hop.set({ "aktis.identity_error": parsed.error.code });
+      return parsed;
     } catch {
+      hop.fail("engine_unreachable");
       return undefined;
+    } finally {
+      hop.end();
     }
   }
 
-  private invokeRequest(input: AgentGraphInput, caller: ForwardedCaller | undefined): { headers: Record<string, string>; body: string } {
+  private invokeRequest(
+    input: AgentGraphInput,
+    caller: ForwardedCaller | undefined,
+    traceparent: string,
+  ): { headers: Record<string, string>; body: string } {
     const headers = this.headers();
-    // docs/adr/0050 §4: a child of the inbound trace, or the root of a new
-    // one, so the engine's spans for this turn join the delivery's trace.
-    headers[TRACEPARENT_HEADER] = nextTraceparent(input.traceparent);
+    // docs/adr/0050 §4: the calling span's context, so the engine's spans for
+    // this turn join the delivery's trace.
+    headers[TRACEPARENT_HEADER] = traceparent;
 
     // The sender login travels as a SIGNED assertion, not a body field —
     // reusing the same `x-gateway-user-assertion` contract integration-gateway

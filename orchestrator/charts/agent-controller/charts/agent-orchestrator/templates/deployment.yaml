@@ -73,6 +73,7 @@ spec:
               containerPort: {{ .Values.ports.callback }}
               protocol: TCP
           env:
+            {{- include "agent-orchestrator.otelEnv" . | nindent 12 }}
             - name: AGENT_NAMESPACE
               value: {{ include "agent-orchestrator.toolNamespace" . | quote }}
             # Namespace the KnowledgeBase/Corpus CRs are read from — may differ

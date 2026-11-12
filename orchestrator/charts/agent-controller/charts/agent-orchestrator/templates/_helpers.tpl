@@ -147,3 +147,19 @@ their own namespace while tools/agents and Jobs stay where they are.
 {{- $g := .Values.global | default dict -}}
 {{- .Values.knowledgeBases.namespace | default $g.knowledgeBaseNamespace | default (include "agent-orchestrator.toolNamespace" .) -}}
 {{- end -}}
+
+{{/*
+OpenTelemetry export (docs/adr/0050 §4): on when the umbrella chart's
+global.observability.enabled is, pointing at its collector. Unset, this
+process exports nothing and only forwards W3C traceparent.
+*/}}
+{{- define "agent-orchestrator.otelEnv" -}}
+{{- $g := .Values.global | default dict }}
+{{- $obs := $g.observability | default dict }}
+{{- if $obs.enabled }}
+- name: OTEL_EXPORTER_OTLP_ENDPOINT
+  value: {{ printf "http://%s-otel-collector:4318" .Release.Name | quote }}
+- name: OTEL_SERVICE_NAME
+  value: "agent-orchestrator"
+{{- end }}
+{{- end -}}
