@@ -80,7 +80,7 @@ describe("isReadOnly", () => {
   it("index.ts derives read-only from the runtime config, never the goal", () => {
     const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "index.ts"), "utf8");
     expect(src).toContain("const readOnly = isReadOnly(runtimeConfig);");
-    expect(src).toContain("buildOpencodeConfig({ model: toolConfig.model, readOnly })");
+    expect(src).toMatch(/buildOpencodeConfig\(\{\s*model: toolConfig\.model,\s*readOnly,/);
     expect(src).toContain("resolveUndelegatedToken(toolConfig, readOnly)");
     expect(src).toMatch(/resolveDelegatedToken\(toolConfig, [^,]+, readOnly,/);
     expect(src).not.toContain(LEGACY_SENTINEL);
@@ -106,5 +106,16 @@ describe("buildPrompt", () => {
     const prompt = buildPrompt("add a health check", null);
     expect(prompt).not.toContain("CONTINUING work");
     expect(prompt).toContain("gh repo create");
+  });
+
+  // docs/adr/0050 §3c: opencode's AI SDK spans carry prompt and response text
+  // (it sets no recordInputs/recordOutputs), so they are off unless the run was
+  // cleared for content.
+  it("enables opencode's AI SDK spans only when asked", () => {
+    expect(buildOpencodeConfig({ model: "m" })).not.toHaveProperty("experimental");
+    expect(buildOpencodeConfig({ model: "m", aiSdkSpans: false })).not.toHaveProperty("experimental");
+    expect(buildOpencodeConfig({ model: "m", aiSdkSpans: true })).toMatchObject({
+      experimental: { openTelemetry: true },
+    });
   });
 });
