@@ -182,7 +182,7 @@ const file_aktis_protocol_v1_turn_event_proto_rawDesc = "" +
 	"\x04_pctB\a\n" +
 	"\x05_codeB\n" +
 	"\n" +
-	"\b_messageBZZXgithub.com/imaustink/agent-controller/framework/protocol/go/aktis/protocol/v1;protocolv1b\x06proto3"
+	"\b_messageBOZMgithub.com/imaustink/aktis/framework/protocol/go/aktis/protocol/v1;protocolv1b\x06proto3"
 
 var (
 	file_aktis_protocol_v1_turn_event_proto_rawDescOnce sync.Once

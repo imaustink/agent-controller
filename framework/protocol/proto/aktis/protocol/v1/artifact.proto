@@ -4,7 +4,7 @@ package aktis.protocol.v1;
 
 import "buf/validate/validate.proto";
 
-option go_package = "github.com/imaustink/agent-controller/framework/protocol/go/aktis/protocol/v1;protocolv1";
+option go_package = "github.com/imaustink/aktis/framework/protocol/go/aktis/protocol/v1;protocolv1";
 
 // Reference to a large or binary payload delivered out-of-band (object store,
 // mounted volume, etc.). Bytes never travel on an event channel -- only this

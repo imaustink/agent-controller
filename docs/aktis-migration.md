@@ -74,7 +74,7 @@ hook still runs post-upgrade, and both are idempotent.
   matter are `agent-orchestrator.crdGroup`, `crdApiVersion` (community-components),
   and any `AGENT_CRD_GROUP` / `CRD_GROUP` environment overrides.
 - **Check your own manifests for the old `apiVersion`.** CRs you deploy outside
-  the charts (a GitOps repository, the agent-controller chart's
+  the charts (a GitOps repository, the aktis chart's
   `extraManifests`, the `examples/event-triggers` copies) name
   `core.controller-agent.dev/v1alpha1`. Change them to `core.aktis.ai/v1alpha1`
   in the same change as the upgrade: once `cleanup` deletes the old CRDs, a

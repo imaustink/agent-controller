@@ -110,7 +110,7 @@ const file_aktis_protocol_v1_artifact_proto_rawDesc = "" +
 	"\x04_uriB\t\n" +
 	"\a_sha256B\b\n" +
 	"\x06_bytesB\x0f\n" +
-	"\r_content_typeBZZXgithub.com/imaustink/agent-controller/framework/protocol/go/aktis/protocol/v1;protocolv1b\x06proto3"
+	"\r_content_typeBOZMgithub.com/imaustink/aktis/framework/protocol/go/aktis/protocol/v1;protocolv1b\x06proto3"
 
 var (
 	file_aktis_protocol_v1_artifact_proto_rawDescOnce sync.Once

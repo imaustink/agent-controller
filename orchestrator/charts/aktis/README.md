@@ -1,6 +1,6 @@
-# agent-controller (system chart)
+# aktis (system chart)
 
-Deploys the **agent-controller system** as a single Helm release, using the
+Deploys the **Aktis system** as a single Helm release, using the
 subcharts pattern — each component is a subchart that can be toggled
 independently:
 

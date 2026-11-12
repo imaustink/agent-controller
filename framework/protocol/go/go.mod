@@ -1,4 +1,4 @@
-module github.com/imaustink/agent-controller/framework/protocol/go
+module github.com/imaustink/aktis/framework/protocol/go
 
 go 1.26.0
 

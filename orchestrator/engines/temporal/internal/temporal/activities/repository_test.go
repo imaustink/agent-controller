@@ -27,7 +27,7 @@ func TestAGitHubURLNamesTheRepositoryWithoutAModelCall(t *testing.T) {
 
 func TestAnOwnerAndNameTheRequestSpellsOutAreAccepted(t *testing.T) {
 	repo, _ := extract(t, `{"owner":"bitovi","name":"bitovi-platform-services"}`, "",
-		"In bitovi/bitovi-platform-services, add the oikb daemon to gitops/agent-controller/values.yaml.")
+		"In bitovi/bitovi-platform-services, add the oikb daemon to gitops/aktis/values.yaml.")
 	require.Equal(t, "bitovi/bitovi-platform-services", repo)
 }
 
@@ -37,12 +37,12 @@ func TestAModelAnswerTheRequestDoesNotSupportIsDropped(t *testing.T) {
 	cases := map[string]string{
 		"invented name":  `{"owner":"bitovi","name":"secret-repo"}`,
 		"invented owner": `{"owner":"someone-else","name":"bitovi-platform-services"}`,
-		"a file path":    `{"owner":"gitops","name":"agent-controller/values.yaml"}`,
+		"a file path":    `{"owner":"gitops","name":"aktis/values.yaml"}`,
 		"a substring":    `{"owner":"","name":"platform"}`,
 	}
 	for label, payload := range cases {
 		repo, _ := extract(t, payload, "bitovi",
-			"In bitovi-platform-services, add the oikb daemon to gitops/agent-controller/values.yaml.")
+			"In bitovi-platform-services, add the oikb daemon to gitops/aktis/values.yaml.")
 		require.Empty(t, repo, label)
 	}
 }

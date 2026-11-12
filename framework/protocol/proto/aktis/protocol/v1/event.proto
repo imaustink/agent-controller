@@ -6,7 +6,7 @@ import "aktis/protocol/v1/artifact.proto";
 import "buf/validate/validate.proto";
 import "google/protobuf/struct.proto";
 
-option go_package = "github.com/imaustink/agent-controller/framework/protocol/go/aktis/protocol/v1;protocolv1";
+option go_package = "github.com/imaustink/aktis/framework/protocol/go/aktis/protocol/v1;protocolv1";
 
 // One event in a TOOL call's one-way stream:
 //

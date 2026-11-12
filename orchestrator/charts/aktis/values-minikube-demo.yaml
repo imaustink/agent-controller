@@ -1,4 +1,4 @@
-# Values file for the local minikube demo of the `agent-controller` system
+# Values file for the local minikube demo of the `aktis` system
 # chart release (namespace `controller-agent`). Merges the two former
 # per-chart demo files (charts/agent-orchestrator/values-minikube-demo.yaml
 # and charts/core-controller/values-minikube-demo.yaml) under their subchart

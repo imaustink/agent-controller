@@ -1,4 +1,4 @@
-# values-production.yaml — agent-controller system chart on the homelab
+# values-production.yaml — aktis system chart on the homelab
 # cluster (namespace controller-agent). Consumed automatically by
 # .github/workflows/deploy.yml on every push to main; formerly lived as
 # values-agent-controller.yaml in the private imaustink/homelab repo and was
@@ -275,7 +275,7 @@ integration-gateway:
     # commit/redeploy needed to add/remove a person). JSON:
     # {"<login>": {"subject": "...", "roles": [...]}}
     githubIdentities: '{"imaustink": {"subject": "imaustink", "roles": ["writer"]}}'
-    # Left empty: imaustink/agent-controller is a personal-account repo, not
+    # Left empty: imaustink/aktis is a personal-account repo, not
     # org-owned, so there's no GitHub org/team to check membership against
     # (src/identity.ts's GithubTeamMembershipResolver needs an org). Set this
     # instead of/in addition to githubCollaboratorRoles below only if this

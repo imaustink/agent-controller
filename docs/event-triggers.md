@@ -52,7 +52,7 @@ spec:
     schedule: "0 7 * * *"           # standard 5-field cron
     timeZone: America/Chicago       # optional
     suspend: false                  # optional
-    payload: { repo: imaustink/agent-controller }   # optional, any JSON; becomes envelope.body
+    payload: { repo: imaustink/aktis }   # optional, any JSON; becomes envelope.body
 ```
 
 Rules:

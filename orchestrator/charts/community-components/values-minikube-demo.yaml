@@ -1,6 +1,6 @@
 # Values file for the local minikube demo of the `community-components`
-# release (namespace `controller-agent`). Install AFTER the agent-controller
-# chart's release -- see ../agent-controller/values-minikube-demo.yaml --
+# release (namespace `controller-agent`). Install AFTER the aktis
+# chart's release -- see ../aktis/values-minikube-demo.yaml --
 # since the CRDs it depends on ship with that chart.
 
 enabled: true
@@ -11,7 +11,7 @@ enabled: true
 recipePublisher:
   mealieBaseUrl: "https://recipes.kurpuis.com"
 # web-search needs the agent-controller release's searxng.enabled=true (see
-# ../agent-controller/values-minikube-demo.yaml) -- the default searxngBaseUrl
+# ../aktis/values-minikube-demo.yaml) -- the default searxngBaseUrl
 # in values.yaml already matches that release's name ("agent-controller").
 webSearch:
   enabled: true

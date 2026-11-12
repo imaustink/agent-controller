@@ -21,7 +21,7 @@ const (
 
 // Caller is the resolved identity a retrieval runs as. Every activity fails
 // closed: no subject means no results, and roles gate visibility at the
-// store (agent-controller ADR 0004/0008 discipline).
+// store (Aktis ADR 0004/0008 discipline).
 type Caller struct {
 	Subject string   `json:"subject"`
 	Roles   []string `json:"roles,omitempty"`

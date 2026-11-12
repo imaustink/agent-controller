@@ -12,7 +12,7 @@ import (
 )
 
 // Activity names for the agent loop's LLM decision nodes — ports of
-// agent-controller's capability-need-checker, skill-fit-checker,
+// Aktis's capability-need-checker, skill-fit-checker,
 // skill-selector, action-planner, and response-composer.
 const (
 	CheckNeedsCapabilityActivityName = "CheckNeedsCapability"

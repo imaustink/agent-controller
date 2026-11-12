@@ -511,7 +511,7 @@ const file_aktis_protocol_v1_agent_protocol_proto_rawDesc = "" +
 	"\n" +
 	"\b_call_idB\x05\n" +
 	"\x03_okB\b\n" +
-	"\x06_errorBZZXgithub.com/imaustink/agent-controller/framework/protocol/go/aktis/protocol/v1;protocolv1b\x06proto3"
+	"\x06_errorBOZMgithub.com/imaustink/aktis/framework/protocol/go/aktis/protocol/v1;protocolv1b\x06proto3"
 
 var (
 	file_aktis_protocol_v1_agent_protocol_proto_rawDescOnce sync.Once

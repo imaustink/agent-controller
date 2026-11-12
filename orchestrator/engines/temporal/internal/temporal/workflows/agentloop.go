@@ -74,7 +74,7 @@ type TurnMeta struct {
 // runAgentTurn is the ported agent loop: active agent → event trigger target →
 // active-skill fit check → capability gate → retrieve → select → resolve
 // tools → plan⇄runTool → compose. It returns the reply plus which skill (if
-// any) stays active. Mirrors agent-controller's graph nodes.
+// any) stays active. Mirrors Aktis's graph nodes.
 func runAgentTurn(ctx workflow.Context, actx workflow.Context, state *ConversationState, in TurnInput, note func(string), emit func(messaging.TurnEvent)) (string, TurnMeta, []callertools.PendingCall, error) {
 	logger := workflow.GetLogger(ctx)
 	meta := TurnMeta{Path: "bare"}

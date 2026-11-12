@@ -5,7 +5,7 @@ package aktis.protocol.v1;
 import "aktis/protocol/v1/artifact.proto";
 import "buf/validate/validate.proto";
 
-option go_package = "github.com/imaustink/agent-controller/framework/protocol/go/aktis/protocol/v1;protocolv1";
+option go_package = "github.com/imaustink/aktis/framework/protocol/go/aktis/protocol/v1;protocolv1";
 
 // One point in a TURN's lifecycle (temporal engine ADR 0004).
 //

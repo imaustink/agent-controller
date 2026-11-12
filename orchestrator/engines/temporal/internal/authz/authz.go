@@ -359,7 +359,7 @@ type Deps struct {
 	Repos RepoReader
 
 	// ConnectionsURL is integration-gateway's Connections page
-	// ("https://<gw>/connections", agent-controller ADR 0046). When set, an
+	// ("https://<gw>/connections", Aktis ADR 0046). When set, an
 	// Open WebUI chat caller's link prompt is one page link for every
 	// missing provider instead of a provider's own flow; see
 	// UsesConnectionsPage. Empty keeps direct links everywhere.
@@ -448,7 +448,7 @@ func (s *Service) Authorize(ctx context.Context, req Request) (Verdict, error) {
 
 	plan, principal, principalLogin := s.planProviders(ctx, req, s.principalOf(req))
 
-	// One Connections-page link for the whole turn (agent-controller ADR
+	// One Connections-page link for the whole turn (Aktis ADR
 	// 0046). When the page stands in for the providers' own flows, a missing
 	// provider is not offered on its own: it is held back until every
 	// provider has been assessed, then ONE "/connections/link?need=..." link
@@ -1111,7 +1111,7 @@ func composeLinkRequired(pending []pendingEntry, failedToStart []string) string 
 	var parts []string
 
 	// Deduplicated by link: on the Connections page several providers share
-	// ONE link (agent-controller ADR 0046), and it is offered once.
+	// ONE link (Aktis ADR 0046), and it is offered once.
 	var texts []string
 	for _, p := range pending {
 		if !containsString(texts, p.linkText) {

@@ -18,7 +18,7 @@ the App. It left two things open.
    `claude-code-swe-agent` did. Every run read with the App's installation
    token, which can see every repository the App is installed on.
 
-The bitovi incident behind [PR #244](https://github.com/imaustink/agent-controller/pull/244)
+The bitovi incident behind [PR #244](https://github.com/imaustink/aktis/pull/244)
 showed why that matters. A chat user who never linked GitHub still had the
 agent open a pull request. It ran on the App's token, and, after an identity
 downgrade, on a Claude credential that was not theirs.

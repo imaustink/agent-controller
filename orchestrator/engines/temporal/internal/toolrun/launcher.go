@@ -1,4 +1,4 @@
-// Package toolrun creates and inspects agent-controller ToolRun CRs — the
+// Package toolrun creates and inspects Aktis ToolRun CRs — the
 // only way this system runs a tool. The Go core-controller reconciles each
 // CR into a hardened one-shot Job; we never touch batch/jobs.
 package toolrun

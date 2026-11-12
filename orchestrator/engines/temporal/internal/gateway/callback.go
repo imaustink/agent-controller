@@ -25,7 +25,7 @@ type WorkflowSignaler interface {
 
 // CallbackServer translates tool-Job HMAC callbacks into workflow signals.
 // It listens on its own port so operators can keep it cluster-internal while
-// exposing the chat facade more broadly (agent-controller ADR 0006's
+// exposing the chat facade more broadly (Aktis ADR 0006's
 // two-listener split, preserved).
 type CallbackServer struct {
 	signaler WorkflowSignaler

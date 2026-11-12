@@ -10,7 +10,7 @@ import (
 )
 
 // Qdrant implements Store over one Qdrant collection. Nothing outside this
-// file touches the Qdrant client (agent-controller ADR 0003's port rule).
+// file touches the Qdrant client (Aktis ADR 0003's port rule).
 type Qdrant struct {
 	client     *qdrant.Client
 	collection string

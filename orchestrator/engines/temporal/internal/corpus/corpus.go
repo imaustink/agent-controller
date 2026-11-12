@@ -1,5 +1,5 @@
 // Package corpus searches the per-Corpus collections a KnowledgeBase
-// composes (agent-controller ADR 0039).
+// composes (Aktis ADR 0039).
 //
 // The catalog collections answer "which capability fits this turn?". A corpus
 // answers "what do we know about this client?", over ordinary documents rather

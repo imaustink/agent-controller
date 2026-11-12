@@ -248,7 +248,7 @@ export interface GithubCollaboratorPermissionResolverOptions {
 /**
  * PROD-GRADE identity mapping for setups with no GitHub Organization to
  * hang teams off of -- e.g. a personal-account repo like
- * `imaustink/agent-controller`, where {@link GithubTeamMembershipResolver}'s
+ * `imaustink/aktis`, where {@link GithubTeamMembershipResolver}'s
  * org/team API has nothing to query. Resolves a GitHub login's identity by
  * checking its actual collaborator permission on the *specific repo the
  * webhook event fired on* (`GET

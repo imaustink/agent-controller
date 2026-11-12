@@ -15,7 +15,7 @@ import (
 	"github.com/aktisai/orchestrator/engines/temporal/internal/temporal/activities"
 )
 
-// AgentWorkflow replaces agent-controller's AgentRun pod + bidirectional
+// AgentWorkflow replaces Aktis's AgentRun pod + bidirectional
 // NATS channel: a sub-agent is a child workflow, and the up/down protocol
 // (ready/progress/reply/failed ↔ prompt) becomes parent↔child signals.
 // Human-in-the-loop is a durable signal wait — no pod idles on a human.
@@ -33,7 +33,7 @@ const (
 
 const (
 	// maxAgentDepth caps recursive delegation (conversation → agent →
-	// agent…), closing agent-controller ADR 0001's open question.
+	// agent…), closing Aktis ADR 0001's open question.
 	maxAgentDepth = 3
 
 	defaultAgentMaxIterations = 8

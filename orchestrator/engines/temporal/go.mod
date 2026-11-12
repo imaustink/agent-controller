@@ -7,7 +7,7 @@ require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/google/cel-go v0.26.0
 	github.com/google/uuid v1.6.0
-	github.com/imaustink/agent-controller/framework/protocol/go v0.0.0-20261108124306-6d581a333d23
+	github.com/imaustink/aktis/framework/protocol/go v0.0.0-20261112171808-a0538cda1020
 	github.com/nats-io/nats.go v1.52.0
 	github.com/qdrant/go-client v1.18.3
 	github.com/stretchr/testify v1.12.1

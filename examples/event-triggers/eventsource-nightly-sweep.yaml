@@ -14,5 +14,5 @@ spec:
     # timeZone: America/Chicago
     # suspend: true
     payload:
-      repo: imaustink/agent-controller
+      repo: imaustink/aktis
       limit: 25

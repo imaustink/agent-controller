@@ -406,7 +406,7 @@ hardcoded in the gateway any more.
 - **The `ai-triage` / `ai-review` flows are four example CRs** in
   `examples/event-triggers/` (`eventtrigger-github-{issue,pr}-{triage,review}.yaml`;
   production installs copies against `claude-code-swe-agent` through the
-  agent-controller chart's `extraManifests`): each matches
+  aktis chart's `extraManifests`): each matches
   `headers["x-github-event"]`, `body.action == "labeled"` and its label in
   CEL; the two review triggers set `readOnly: true`. Triage on an issue opens a
   PR; triage on a PR addresses its feedback, pushes, and syncs with base; review

@@ -5,9 +5,9 @@
 
 AI agents as **Temporal workflows** that can spin up other Temporal-workflow
 agents — the successor to
-[agent-controller](https://github.com/imaustink/agent-controller)'s
+[Aktis](https://github.com/imaustink/aktis)'s
 pod-based agent loop. Tools stay as one-shot Kubernetes Jobs (launched via
-agent-controller's `ToolRun` CRs), and skill/tool selection stays RAG-based
+Aktis's `ToolRun` CRs), and skill/tool selection stays RAG-based
 over Qdrant. See
 [docs/adr/0001](docs/adr/0001-agents-as-temporal-workflows.md) for the full
 design and milestone plan.
@@ -18,7 +18,7 @@ design and milestone plan.
 | ---- | ---------- |
 | `cmd/gateway` | Stateless HTTP front door: OpenAI Chat Completions-compatible facade and the `/invoke` accept/poll pair, both → per-session conversation workflow via update-with-start. Also hosts the HMAC callback→signal bridge for tool Jobs, and watches `EventTrigger` CRs to match event envelopes posted by direct callers (ADR 0048). |
 | `cmd/worker` | Temporal worker hosting workflows and activities. |
-| `cmd/catalog-sync` | Watches agent-controller's Tool/Skill/Agent CRs (dynamic informers) and mirrors them into Qdrant with derived skill access roles. |
+| `cmd/catalog-sync` | Watches Aktis's Tool/Skill/Agent CRs (dynamic informers) and mirrors them into Qdrant with derived skill access roles. |
 | `internal/catalog` | CR decoding, skill-access derivation (ADR 0011 port), indexer. |
 | `internal/vectorstore` | Store port + Qdrant adapter; RBAC filters baked into every read. |
 | `internal/messaging` | The tool event stream, HMAC callback signing and turn lifecycle envelope. Validity is decided by the canonical wire contract (`framework/protocol`, ADR 0047) via `CheckContract`; the structs here carry messages that passed it. |
@@ -27,7 +27,7 @@ design and milestone plan.
 | `internal/temporal/workflows` | Deterministic workflow code only: `ConversationWorkflow` plus three agent execution styles (declarative, checkpoint-resume, and NATS-bridged upstream pod agents). |
 | `internal/agentrun` | Launches upstream `AgentRun` CRs and bridges their bidirectional NATS protocol into workflow signals, so `claude-code-swe-agent` and `opencode-swe-agent` run unmodified. See [docs/pod-agents.md](docs/pod-agents.md). |
 | `internal/authz` | The authorization pre-flight: one owner, plain control flow, credentials written to a Secret so a value never enters workflow state. |
-| `internal/identitylink` | Client for agent-controller's integration-gateway credential API. |
+| `internal/identitylink` | Client for Aktis's integration-gateway credential API. |
 | `internal/callertools` | Consumer-supplied tools over the OpenAI facade (upstream ADR 0035). |
 | `internal/temporal/activities` | All non-deterministic work (LLM calls; later: Qdrant, ToolRun CRs, identity). |
 | `internal/llm` | Minimal OpenAI-compatible chat client (base URL overridable). |
@@ -71,7 +71,7 @@ enter another's candidate set. A skill can refuse them with
 
 ## Event-driven turns (`/invoke`)
 
-`/invoke` takes one of two shapes (agent-controller ADR 0048,
+`/invoke` takes one of two shapes (Aktis ADR 0048,
 `docs/event-triggers.md` §5):
 
 - **A resolved turn** from agent-orchestrator, which matched the event
@@ -155,7 +155,7 @@ make docker           # build both images
 
 ## Deploying
 
-Ships as a subchart of the umbrella `agent-controller` chart, off by default.
+Ships as a subchart of the umbrella `aktis` chart, off by default.
 Enabling it is deliberately two steps, so the engine can be deployed and
 watched before any turn depends on it:
 

@@ -1,4 +1,4 @@
-// catalog-sync watches agent-controller's Tool/Skill/Agent CRs and mirrors
+// catalog-sync watches Aktis's Tool/Skill/Agent CRs and mirrors
 // them into the Qdrant catalog collections used by the retrieval activities.
 // It runs alongside the worker but is deliberately not workflow code:
 // catalog maintenance is background sync, independent of any turn.

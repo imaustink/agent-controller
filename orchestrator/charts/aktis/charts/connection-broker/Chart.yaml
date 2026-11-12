@@ -10,9 +10,9 @@ description: >-
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
-home: https://github.com/imaustink/agent-controller
+home: https://github.com/imaustink/aktis
 sources:
-  - https://github.com/imaustink/agent-controller
+  - https://github.com/imaustink/aktis
 keywords:
   - agent
   - connections

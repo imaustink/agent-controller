@@ -13,7 +13,7 @@ import (
 const connectionsLinkTTLSeconds = 10 * 60
 
 // UsesConnectionsPage reports whether integration-gateway's Connections page
-// (agent-controller docs/adr/0046) stands in for a provider's own link flow for
+// (Aktis docs/adr/0046) stands in for a provider's own link flow for
 // this caller. PARITY: usesConnectionsPage in agent-orchestrator's
 // authorization-service.ts.
 //

@@ -1,4 +1,4 @@
-# Values for the agent-controller system chart. Each top-level key maps to a
+# Values for the aktis system chart. Each top-level key maps to a
 # subchart (by its dependency name/alias in Chart.yaml); set `<key>.enabled`
 # to toggle that component. Anything nested under a key is passed straight
 # through to that subchart -- see each subchart's own values.yaml for the full

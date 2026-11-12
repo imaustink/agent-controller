@@ -79,9 +79,9 @@ make build test vet                                           # checks
 
 ### Prerequisites (installed once, in this order)
 
-1. **agent-controller** — owns the CRDs (`Tool`/`ToolRun`/`Skill`/`Agent`),
+1. **aktis** (chart) — owns the CRDs (`Tool`/`ToolRun`/`Skill`/`Agent`),
    the Go core-controller that turns ToolRuns into hardened Jobs, and the
-   tool images. Install its charts per its README (`agent-controller` chart
+   tool images. Install its charts per its README (`aktis` chart
    first, then `community-components` for the sample catalog). Default
    namespace assumption here: `controller-agent`.
 2. **Temporal** — e.g. the `temporalio/temporal` Helm chart (the
@@ -94,7 +94,7 @@ make build test vet                                           # checks
 
 ```bash
 NS=durable-agents           # release namespace
-CATALOG_NS=controller-agent # where agent-controller keeps CRs / runs Jobs
+CATALOG_NS=controller-agent # where Aktis keeps CRs / runs Jobs
 kubectl create namespace $NS
 
 # LLM + embeddings key (worker + catalog-sync)

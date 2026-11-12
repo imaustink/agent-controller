@@ -324,7 +324,7 @@ func (a *KnowledgeBaseActivities) linkClauses(ctx context.Context, caller Caller
 		return nil
 	}
 	// One link to the Connections page for every missing provider, rather
-	// than a clause per provider, each a raw OAuth URL (agent-controller ADR
+	// than a clause per provider, each a raw OAuth URL (Aktis ADR
 	// 0046). Nothing is started here: the page starts each flow for the same
 	// subject retrieval reads. PARITY: startKnowledgeBaseLinkClauses in graph.ts.
 	if authz.UsesConnectionsPage(a.ConnectionsURL, caller.Subject, identitylink.FlowAuthCode) {

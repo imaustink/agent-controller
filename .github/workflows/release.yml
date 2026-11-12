@@ -183,7 +183,7 @@ jobs:
     needs: changes
     # push-to-main only (collaborators), but keep a fork from pushing to our
     # GHCR namespace if this workflow is ever re-targeted.
-    if: github.repository == 'imaustink/agent-controller' && needs.changes.outputs.matrix != '[]'
+    if: github.repository == 'imaustink/aktis' && needs.changes.outputs.matrix != '[]'
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 60
     strategy:
@@ -254,7 +254,7 @@ jobs:
     # for pinning. Runs only when EVERY build-images job succeeded (default
     # `needs` semantics), so tags never point at a partial set of arches.
     needs: [changes, build-images]
-    if: github.repository == 'imaustink/agent-controller' && needs.changes.outputs.matrix != '[]'
+    if: github.repository == 'imaustink/aktis' && needs.changes.outputs.matrix != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -327,7 +327,7 @@ jobs:
     needs: changes
     runs-on: ubuntu-latest
     # Guard so a fork that somehow re-targets this job cannot publish under our package namespace.
-    if: github.repository == 'imaustink/agent-controller' && needs.changes.outputs.charts == 'true'
+    if: github.repository == 'imaustink/aktis' && needs.changes.outputs.charts == 'true'
     # contents: write to push the version bump back to main; packages: write to
     # push the chart to GHCR (this job's override replaces the workflow default).
     permissions:
@@ -381,7 +381,7 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
             -u "${{ github.actor }}" --password-stdin
 
-      - name: Fetch agent-controller chart dependencies
+      - name: Fetch aktis chart dependencies
         run: |
           # Helm doesn't recurse into file:// subchart dependencies, so the
           # agent-orchestrator subchart's own qdrant dependency needs its own
@@ -442,7 +442,7 @@ jobs:
     # doesn't run (and restart images) on top of a build it can't trust.
     if: |
       always() &&
-      github.repository == 'imaustink/agent-controller' &&
+      github.repository == 'imaustink/aktis' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     # Override the workflow-level permissions (contents: read, packages: write):
@@ -557,7 +557,7 @@ jobs:
             kubectl wait --for=condition=established --timeout=60s "crd/$name"
           done
 
-      - name: Fetch agent-controller chart dependencies
+      - name: Fetch aktis chart dependencies
         run: |
           # Helm doesn't recurse into file:// subchart dependencies, so the
           # agent-orchestrator subchart's own qdrant dependency needs its own
