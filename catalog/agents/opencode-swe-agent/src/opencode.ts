@@ -57,6 +57,14 @@ export interface OpencodeConfigOptions {
   model: string;
   /** When true, layer on {@link READ_ONLY_DENY_BASH_PATTERNS} so the run cannot push or open/merge a PR. */
   readOnly?: boolean;
+  /**
+   * Turn on opencode's AI SDK spans (`experimental.openTelemetry`), docs/adr/
+   * 0050 §3c. Only for a run the engine cleared for content: opencode passes
+   * no recordInputs/recordOutputs, so the AI SDK's defaults put every prompt
+   * and response on the span. Its own operation spans and logs go to
+   * OTEL_EXPORTER_OTLP_ENDPOINT regardless, and carry no conversation text.
+   */
+  aiSdkSpans?: boolean;
 }
 
 /**
@@ -101,6 +109,7 @@ export function buildOpencodeConfig(opts: OpencodeConfigOptions): object {
     $schema: "https://opencode.ai/config.json",
     model: opts.model,
     permission: { ...ALLOW_ALL_OTHER_CATEGORIES, bash },
+    ...(opts.aiSdkSpans ? { experimental: { openTelemetry: true } } : {}),
   };
 }
 

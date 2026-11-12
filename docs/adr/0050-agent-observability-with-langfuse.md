@@ -143,7 +143,18 @@ claude-code-swe-agent turns on the CLI's beta span export
 parent on `TRACEPARENT`. Metrics and logs are off, and text flags are set
 only for a run cleared for content.
 
-opencode documents no OpenTelemetry export, so it is not wired.
+opencode (checked against the shipped 1.19.5 binary; its docs don't cover this):
+- Whenever `OTEL_EXPORTER_OTLP_ENDPOINT` is set it exports its own operation
+  spans to `/v1/traces` and logs to `/v1/logs`, with no switch for either. It
+  reads `OTEL_RESOURCE_ATTRIBUTES` but not `TRACEPARENT`, so its spans form a
+  trace of their own. The controller's resource attributes
+  (`aktis.agent_run`, `aktis.trace_id`) join that trace to the turn's.
+- `experimental.openTelemetry` adds the AI SDK's model-call spans. opencode
+  sets no `recordInputs`/`recordOutputs`, so those spans carry prompt and
+  response text. opencode-swe-agent therefore enables them only for a run
+  cleared for content.
+- The collector accepts OTLP logs into a `nop` exporter, so opencode's log
+  export succeeds instead of retrying; Langfuse takes traces only.
 
 The original plan for this phase: The SWE agents run
 the Claude Code CLI and opencode as subprocesses, so `@aktis/agent-runtime`

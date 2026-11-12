@@ -376,7 +376,16 @@ async function main(): Promise<void> {
     await mkdir(opencodeConfigDir, { recursive: true });
     await writeFile(
       join(opencodeConfigDir, "opencode.json"),
-      JSON.stringify(buildOpencodeConfig({ model: toolConfig.model, readOnly }), null, 2),
+      JSON.stringify(
+        buildOpencodeConfig({
+          model: toolConfig.model,
+          readOnly,
+          // AI SDK spans record text, so only a content-cleared run gets them.
+          aiSdkSpans: runtimeConfig.telemetry?.captureContent === true,
+        }),
+        null,
+        2,
+      ),
     );
 
     const identity =

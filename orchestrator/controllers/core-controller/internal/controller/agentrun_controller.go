@@ -179,7 +179,7 @@ func (r *AgentRunReconciler) createJob(ctx context.Context, run *toolv1alpha1.Ag
 		args: nil,
 		// The run's own read-only gate and params go last, so they win over
 		// anything the Agent template sets under the same names.
-		staticEnv:      slices.Concat(agent.Spec.Env, r.agentRuntimeEnv(run.Name, run.Spec.Goal), agentEventEnv(run.Spec)),
+		staticEnv:      slices.Concat(agent.Spec.Env, r.agentRuntimeEnv(run.Name, run.Spec.Goal), agentEventEnv(run.Name, run.Spec)),
 		secretEnv:      mergeSecretEnv(agent.Spec.SecretEnv, run.Spec.SecretEnv),
 		resources:      agent.Spec.Resources,
 		initContainers: agent.Spec.InitContainers,

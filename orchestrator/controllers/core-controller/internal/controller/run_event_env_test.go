@@ -150,7 +150,7 @@ var _ = Describe("Run event env", func() {
 				Spec: toolv1alpha1.AgentRunSpec{
 					AgentRef: agentName, Goal: "g", Callback: callback,
 					Telemetry: &toolv1alpha1.AgentRunTelemetry{OTLPEndpoint: "http://t-otel-collector:4318"},
-					Launch:    &toolv1alpha1.AgentRunLaunch{Traceparent: tp},
+					Launch:    &toolv1alpha1.AgentRunLaunch{Traceparent: tp, TraceID: "4bf92f3577b34da6a3ce929d0e0e4736"},
 				},
 			}
 			Expect(k8sClient.Create(ctx, run)).To(Succeed())
@@ -162,6 +162,9 @@ var _ = Describe("Run event env", func() {
 			Expect(env).To(HaveKeyWithValue("OTEL_EXPORTER_OTLP_ENDPOINT", "http://t-otel-collector:4318"))
 			Expect(env).To(HaveKeyWithValue("OTEL_SERVICE_NAME", agentName))
 			Expect(env).To(HaveKeyWithValue("TRACEPARENT", tp))
+			// opencode ignores TRACEPARENT; the resource attributes still join it.
+			Expect(env).To(HaveKeyWithValue("OTEL_RESOURCE_ATTRIBUTES",
+				"aktis.agent="+agentName+",aktis.agent_run=agentrun-telemetry,aktis.trace_id=4bf92f3577b34da6a3ce929d0e0e4736"))
 		})
 
 		It("refuses to change spec.launch once set", func() {

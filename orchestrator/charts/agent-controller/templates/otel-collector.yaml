@@ -57,6 +57,10 @@ data:
       otlphttp/{{ $exporter }}:
         {{- toYaml $cfg | nindent 8 }}
       {{- end }}
+      # Agent CLIs that export OTLP logs whenever an endpoint is set (opencode
+      # has no switch for it) get a 200 instead of a 404 retry loop. Langfuse
+      # takes traces only, so the logs are accepted and dropped.
+      nop: {}
     service:
       extensions:
         - health_check
@@ -74,6 +78,9 @@ data:
             {{- range $exporter, $_ := .Values.observability.extraExporters }}
             - otlphttp/{{ $exporter }}
             {{- end }}
+        logs:
+          receivers: [otlp]
+          exporters: [nop]
 ---
 apiVersion: apps/v1
 kind: Deployment
