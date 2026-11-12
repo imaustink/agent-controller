@@ -69,6 +69,8 @@ FROM node:22-bookworm-slim AS runtime
 
 ARG GH_VERSION=2.63.2
 ARG GO_VERSION=1.24.5
+ARG KUBECTL_VERSION=1.36.6
+ARG AWS_CLI_VERSION=2.31.0
 # 2.1.280+ is required for claude-opus-5-5; the API rejects older CLIs with
 # "does not support this model". 2.1.322 re-checked against claude-runner's
 # contracts: stream-json system/init, assistant text+tool_use, result
@@ -119,6 +121,26 @@ RUN apt-get update \
      -o /tmp/go.tar.gz \
   && tar -xzf /tmp/go.tar.gz -C /usr/local \
   && rm -f /tmp/go.tar.gz \
+  # kubectl -- official release binary, checksum-verified. Pinned to the
+  # deployed EKS minor (kubectl supports +/-1 minor of skew). No kubeconfig is
+  # baked in: the agent builds one at runtime (e.g. `aws eks update-kubeconfig`)
+  # under $HOME, which is on the writable /tmp emptyDir.
+  && curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+     "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/$(dpkg --print-architecture)/kubectl" \
+     -o /usr/local/bin/kubectl \
+  && echo "$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+     "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/$(dpkg --print-architecture)/kubectl.sha256")  /usr/local/bin/kubectl" \
+     | sha256sum -c - \
+  && chmod 755 /usr/local/bin/kubectl \
+  # AWS CLI v2 -- official installer. No credentials or ~/.aws config are baked
+  # in; the run pod gets them from its ServiceAccount (EKS Pod Identity / IRSA)
+  # where the deployment grants one. Its zip uses uname-style arch names.
+  && curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+     "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m)-${AWS_CLI_VERSION}.zip" \
+     -o /tmp/awscliv2.zip \
+  && unzip -q /tmp/awscliv2.zip -d /tmp \
+  && /tmp/aws/install -i /usr/local/aws-cli -b /usr/local/bin \
+  && rm -rf /tmp/awscliv2.zip /tmp/aws \
   # Claude Code CLI, pinned (see the note above this Dockerfile's header).
   && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
   && npm cache clean --force \
