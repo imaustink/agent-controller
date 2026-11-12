@@ -6,7 +6,7 @@ import "encoding/json"
 // each work step as a one-shot Job and reports through the ordinary tool
 // event stream, with its `succeeded` result carrying this envelope. The Job
 // then EXITS — the wrapping PodAgentWorkflow does all waiting. This
-// replaces agent-controller's session.ask()-over-NATS, where the pod idled
+// replaces Aktis's session.ask()-over-NATS, where the pod idled
 // alive while a human thought.
 const (
 	StepQuestion = "question" // needs a human answer before the next step

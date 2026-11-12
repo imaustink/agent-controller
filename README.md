@@ -5,7 +5,7 @@
 
 # Aktis
 
-> [github.com/imaustink/agent-controller](https://github.com/imaustink/agent-controller)
+> [github.com/imaustink/aktis](https://github.com/imaustink/aktis)
 
 **Agents that work as your people, managed like your infrastructure.**
 
@@ -38,8 +38,10 @@ Take the whole platform or only the parts you need
   as they are or copy.
 
 The name is the Greek *aktís*, a ray of light. The project was called
-agent-controller; the repository, chart and image names still carry that name
-until the repository split.
+agent-controller. The repository and the system chart are renamed; image paths
+(`ghcr.io/imaustink/agent-controller/*`) and the default Helm release name
+(`agent-controller`) still carry the old name, because changing them would
+rename running resources.
 
 The Aktis orchestrator is a Kubernetes-native way to run production AI agents. Tools, Skills,
 and Agents are declared as **custom resources** and launched as one-shot Jobs by
@@ -141,7 +143,7 @@ Kubernetes. Either half can be adopted without the other.
 │   ├── controllers/core-controller/  # Go controller — CRDs + reconcilers, launches Jobs
 │   ├── packages/event-triggers/      # EventSource/EventTrigger contract: envelope, CEL, matching (ADR 0048)
 │   ├── sidecars/localtool-executor/  # in-pod LocalTool executor
-│   └── charts/                 # Helm: agent-controller (system) + community-components (catalog CRs)
+│   └── charts/                 # Helm: aktis (system) + community-components (catalog CRs)
 ├── examples/event-triggers/     # bare EventSource/EventTrigger manifests (webhooks, cron), not in any chart
 ├── e2e/                        # end-to-end suites across every layer
 └── scripts/                    # dev and CI helpers
@@ -215,7 +217,7 @@ Two independent Helm charts cover the full system:
 | [orchestrator/charts/aktis](orchestrator/charts/aktis/) | The system: CRDs + core-controller operator Deployment/RBAC, the agent-orchestrator Deployment/Services, and optional Redis/Qdrant/NATS/Open WebUI |
 | [orchestrator/charts/community-components](orchestrator/charts/community-components/) | The catalog: Tool/Skill/Agent custom resources (recipe-scraper, recipe-publisher, recipe-refining skill, opencode-swe-agent) |
 
-Install `agent-controller` first (it owns the CRDs), then
+Install the `aktis` chart first (it owns the CRDs), then
 `community-components` on top of it. See each chart's README for
 prerequisites and values. Tools are never deployed as long-running pods — the
 controller launches them as one-shot Jobs via `ToolRun`/`AgentRun` CRs.

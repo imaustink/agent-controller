@@ -381,7 +381,7 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
             -u "${{ github.actor }}" --password-stdin
 
-      - name: Fetch agent-controller chart dependencies
+      - name: Fetch aktis chart dependencies
         run: |
           # Helm doesn't recurse into file:// subchart dependencies, so the
           # agent-orchestrator subchart's own qdrant dependency needs its own
@@ -557,7 +557,7 @@ jobs:
             kubectl wait --for=condition=established --timeout=60s "crd/$name"
           done
 
-      - name: Fetch agent-controller chart dependencies
+      - name: Fetch aktis chart dependencies
         run: |
           # Helm doesn't recurse into file:// subchart dependencies, so the
           # agent-orchestrator subchart's own qdrant dependency needs its own

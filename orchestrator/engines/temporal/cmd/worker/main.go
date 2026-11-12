@@ -96,7 +96,7 @@ func main() {
 	w.RegisterActivityWithOptions(agentLoop.PlanAgentAction, activity.RegisterOptions{Name: activities.PlanAgentActionActivityName})
 
 	// Authorization pre-flight. The real credential store lives in
-	// agent-controller's integration-gateway; without a URL for it we fall
+	// Aktis's integration-gateway; without a URL for it we fall
 	// back to the in-memory fake, which is dev-only and says so.
 	var links identitylink.Port
 	if baseURL := os.Getenv("IDENTITY_LINK_GATEWAY_URL"); baseURL != "" {
@@ -138,7 +138,7 @@ func main() {
 		// caller's own token, so it must reach the same GitHub the tokens were
 		// issued by (fake-github in e2e).
 		Repos: authz.GitHubRepoReader{APIURL: getenv("GITHUB_API_URL", "https://api.github.com")},
-		// integration-gateway's Connections page (agent-controller ADR 0046):
+		// integration-gateway's Connections page (Aktis ADR 0046):
 		// chat link prompts become one page link. Same variable, and value, as
 		// agent-orchestrator's.
 		ConnectionsURL: os.Getenv("AGENT_CONNECTIONS_URL"),

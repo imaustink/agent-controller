@@ -34,7 +34,7 @@ Enable with `AGENT_NATS_URL` on the worker.
 
 Heavyweight agents that need a real container environment (opencode-swe-agent
 running git + a coding CLI) don't fit the declarative `AgentWorkflow` loop.
-In agent-controller they ran as long-lived `AgentRun` Jobs holding a
+In Aktis they ran as long-lived `AgentRun` Jobs holding a
 bidirectional NATS conversation — including idling alive while a human
 answered `session.ask()`. Here they become **checkpoint-resume Jobs**:
 
@@ -107,7 +107,7 @@ Job as `ToolRunSpec.secretEnv`. Values never enter workflow state, because
 anything a workflow holds is written to Temporal event history in the clear.
 
 Real store: `IDENTITY_LINK_GATEWAY_URL` / `IDENTITY_LINK_GATEWAY_TOKEN`
-pointing at agent-controller's integration-gateway. Dev fallback:
+pointing at Aktis's integration-gateway. Dev fallback:
 `IDENTITY_LINKS` / `IDENTITY_LINK_URLS` env JSON.
 
 ## Adapting opencode-swe-agent (upstream follow-ups)

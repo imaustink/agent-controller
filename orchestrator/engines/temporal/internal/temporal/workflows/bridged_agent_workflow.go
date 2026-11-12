@@ -13,7 +13,7 @@ import (
 	"github.com/aktisai/orchestrator/engines/temporal/internal/temporal/activities"
 )
 
-// BridgedAgentWorkflow drives an UNMODIFIED agent-controller pod agent
+// BridgedAgentWorkflow drives an UNMODIFIED Aktis pod agent
 // (claude-code-swe-agent, opencode-swe-agent) from a Temporal workflow.
 //
 // The agent runs as the AgentRun Job it always has, speaking the same

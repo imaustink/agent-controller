@@ -26,9 +26,9 @@ type: application
 # verifies tick tokens against the issuer keys and the ClusterRole is gone.)
 version: 0.8.0
 appVersion: "0.1.0"
-home: https://github.com/imaustink/agent-controller
+home: https://github.com/imaustink/aktis
 sources:
-  - https://github.com/imaustink/agent-controller
+  - https://github.com/imaustink/aktis
 keywords:
   - agent
   - orchestrator

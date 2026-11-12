@@ -1,6 +1,6 @@
 package catalog
 
-// DeriveSkillAccess computes a skill's retrieval audience (agent-controller
+// DeriveSkillAccess computes a skill's retrieval audience (Aktis
 // ADR 0011: skills carry no RBAC of their own — "skills aren't dangerous,
 // tools are"):
 //

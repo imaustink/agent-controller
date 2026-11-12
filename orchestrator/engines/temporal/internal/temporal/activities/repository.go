@@ -65,7 +65,7 @@ func (a *AgentLoopActivities) ExtractTargetRepository(ctx context.Context, in Ex
 			"Leave owner empty if the user gave only the repository's name. Leave both empty if the user names no repository, " +
 			"or names more than one and it is unclear which is meant. " +
 			"Never infer or guess a repository the user did not name. A file or directory path, such as " +
-			"gitops/agent-controller/values.yaml, is not a repository, even when it contains a slash."},
+			"gitops/aktis/values.yaml, is not a repository, even when it contains a slash."},
 		{Role: "user", Content: in.Request},
 	}, extractRepositorySchema)
 	if err != nil {

@@ -1,4 +1,4 @@
-// Package catalog decodes agent-controller's Tool/Skill/Agent custom
+// Package catalog decodes Aktis's Tool/Skill/Agent custom
 // resources (core.aktis.ai/v1alpha1) into the descriptors this
 // system indexes and retrieves. Launch details (image, env, resources) stay
 // with the upstream controller — a ToolRun only needs the tool's name — so
@@ -237,7 +237,7 @@ type SkillDescriptor struct {
 }
 
 // EmbeddingText is what gets vectorized for retrieval, mirroring
-// agent-controller's "description + Input/Output" composition.
+// Aktis's "description + Input/Output" composition.
 func (t ToolDescriptor) EmbeddingText() string {
 	return embeddingText(t.Description, t.Input, t.Output)
 }

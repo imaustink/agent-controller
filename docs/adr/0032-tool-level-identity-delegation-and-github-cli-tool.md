@@ -8,7 +8,7 @@ Accepted
 
 ## Context
 
-Issue [imaustink/agent-controller#86](https://github.com/imaustink/agent-controller/issues/86)
+Issue [imaustink/aktis#86](https://github.com/imaustink/aktis/issues/86)
 asked for "a tool with the GH CLI preinstalled... wired up in prod", using
 "the OAuth delegation stuff in the integration gateway to get a token" —
 i.e. the same per-user GitHub identity-link mechanism ADR 0022 built for

@@ -1,4 +1,4 @@
-// Package agentrun bridges agent-controller's pod agents into Temporal
+// Package agentrun bridges Aktis's pod agents into Temporal
 // workflows.
 //
 // # Why this exists at all

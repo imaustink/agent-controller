@@ -1,4 +1,4 @@
-// Package identitylink is the client for agent-controller's
+// Package identitylink is the client for Aktis's
 // integration-gateway credential API: GitHub links (ADR 0022) and per-user
 // Claude credentials of both kinds (ADR 0027), stored durably in Kubernetes
 // Secrets since ADR 0034.

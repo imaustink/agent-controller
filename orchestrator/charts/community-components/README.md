@@ -1,14 +1,14 @@
 # community-components
 
 The community catalog of `Tool`, `Skill`, and `Agent` custom resources
-(ADR 0010/0011) that the agent-controller's core-controller operator
+(ADR 0010/0011) that the aktis chart's core-controller operator
 reconciles and the orchestrator RAG-selects. Installed as its own release,
-independent of the [agent-controller](../agent-controller/) chart, so the
+independent of the [aktis](../aktis/) chart, so the
 catalog can grow, version, and be upgraded/uninstalled on its own schedule.
 
 ## Prerequisite
 
-The `agent-controller` chart must already be installed in the cluster --
+The `aktis` chart must already be installed in the cluster --
 this chart's CRs (`Tool`/`Skill`/`Agent`) require the
 `Tool`/`Skill`/`Agent`/`ToolRun`/`AgentRun`/`LocalTool` CRDs that chart's
 `core-controller` subchart installs. Installing this chart first will fail
@@ -80,7 +80,7 @@ out-of-band is:
 Every tool/agent image (`recipeScraper.image`, `recipePublisher.image`,
 `webSearch.image`, `opencodeSweAgent.image`) also needs to point at a registry
 you actually have access to -- see the top-level
-[agent-controller README](../agent-controller/README.md#prerequisites).
+[aktis chart README](../aktis/README.md#prerequisites).
 
 ## Adding a new community component
 

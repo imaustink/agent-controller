@@ -1,4 +1,4 @@
-// Package continuation ports agent-controller's per-tool continuation
+// Package continuation ports Aktis's per-tool continuation
 // tokens (ADR 0016/0017): a tool prefixes its success output with an opaque
 // `<!-- continuation: <token> -->` marker carrying its own resumable state
 // (repo/branch/PR, a Mealie slug, …). The orchestrator strips the marker

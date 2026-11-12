@@ -1,6 +1,6 @@
 # core-controller
 
-> Part of [github.com/imaustink/agent-controller](https://github.com/imaustink/agent-controller)
+> Part of [github.com/imaustink/aktis](https://github.com/imaustink/aktis)
 
 A Kubernetes controller that makes AI agents and tools **first-class cluster
 citizens**. Instead of hard-coding agent behaviour into application code, you

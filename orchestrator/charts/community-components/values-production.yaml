@@ -5,7 +5,7 @@
 # was fetched cross-repo via a GitHub App token on every deploy -- moved here
 # to drop that indirection now that nothing in this file is a real secret.
 #
-# First-time manual install AFTER agent-controller (its CRs need the CRDs
+# First-time manual install AFTER the aktis chart (its CRs need the CRDs
 # that chart installs):
 #
 #   helm install community-components orchestrator/charts/community-components -n controller-agent \

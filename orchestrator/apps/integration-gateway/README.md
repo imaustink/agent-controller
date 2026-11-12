@@ -1,6 +1,6 @@
 # integration-gateway
 
-Generic event ingestion for agent-controller
+Generic event ingestion for Aktis
 ([ADR 0048](../../../docs/adr/0048-generic-event-triggers.md), contract in
 [docs/event-triggers.md](../../../docs/event-triggers.md)). Every event source is
 an `EventSource` custom resource; the gateway serves it, verifies it,
@@ -94,7 +94,7 @@ See `src/config.ts` for the full list. Notable ones:
   `GATEWAY_GITHUB_COLLABORATOR_ROLES` instead.
 - `GATEWAY_GITHUB_COLLABORATOR_ROLES` — **prod-grade, preferred for
   personal-account repos** (no GitHub Organization to hang teams off of, e.g.
-  this repo, `imaustink/agent-controller`). JSON map of
+  this repo, `imaustink/aktis`). JSON map of
   `{ "<permission-level>": ["role", ...] }`, where `<permission-level>` is
   one of GitHub's repo permission levels (`admin`, `maintain`, `write`,
   `triage`, `read`). A sender is granted the roles mapped to their actual

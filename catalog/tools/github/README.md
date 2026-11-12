@@ -7,7 +7,7 @@ own** delegated GitHub token, not a shared bot credential (ADR 0022/0027).
 ## Contract
 
 - **Input** (`argv[2]`): everything after `gh`, e.g.
-  `"issue view 86 --repo imaustink/agent-controller --json title,body"`.
+  `"issue view 86 --repo imaustink/aktis --json title,body"`.
 - **Output**: `gh`'s own stdout, wrapped in a fenced code block (`json` when
   `--json` was requested, `text` otherwise), delivered via the event contract
   in [docs/messaging.md](../../../docs/messaging.md).
@@ -126,7 +126,7 @@ npm run typecheck --workspace=github
 npm run test --workspace=github
 npm run build --workspace=github
 docker build -f catalog/tools/github/Dockerfile -t github:latest .
-GITHUB_TOKEN=ghp_your_pat ./tools/github/run.sh "issue view 86 --repo imaustink/agent-controller"
+GITHUB_TOKEN=ghp_your_pat ./tools/github/run.sh "issue view 86 --repo imaustink/aktis"
 ```
 
 To test the actual identity-delegation path end-to-end, enable

@@ -34,10 +34,10 @@ spec:
     code changes, delegate to a coding agent instead.
   input: >-
     A single gh CLI command line, everything after "gh" (e.g.
-    "issue view 86 --repo imaustink/agent-controller --json title,body",
-    "issue comment 86 --repo imaustink/agent-controller --body "thanks!"",
-    "pr list --repo imaustink/agent-controller --state open",
-    "search issues "is:open label:bug" --repo imaustink/agent-controller").
+    "issue view 86 --repo imaustink/aktis --json title,body",
+    "issue comment 86 --repo imaustink/aktis --body "thanks!"",
+    "pr list --repo imaustink/aktis --state open",
+    "search issues "is:open label:bug" --repo imaustink/aktis").
     Only a fixed allowlist of commands/subcommands is accepted (see
     catalog/tools/github/README.md); anything else is rejected before it reaches
     GitHub.

@@ -2,7 +2,7 @@
 // (tools / skills / agents), with RBAC baked into every read: queries are
 // role-filtered at the store (an unauthorized record is never a candidate),
 // and lookups by id re-check roles as defense in depth — mirroring
-// agent-controller ADRs 0003/0004/0008.
+// Aktis ADRs 0003/0004/0008.
 package vectorstore
 
 import (
@@ -32,7 +32,7 @@ type Record struct {
 	// Needed by records that exist only to be named by something else. A
 	// knowledge base's generated search tool, and a Connection's scoped GET
 	// tool, are reachable precisely because the knowledge base that owns them
-	// was selected (agent-controller ADR 0039 §2). Letting them compete in open
+	// was selected (Aktis ADR 0039 §2). Letting them compete in open
 	// retrieval would put every client's scoped tooling in front of every
 	// caller, which is the outcome that design exists to prevent.
 	Hidden bool

@@ -2,14 +2,14 @@
 # toggled off.
 #
 # These are normal Helm-managed resources -- install this chart AFTER the
-# agent-controller chart (which owns the Tool/Skill/Agent/ToolRun/AgentRun/
+# aktis chart (which owns the Tool/Skill/Agent/ToolRun/AgentRun/
 # LocalTool CRDs, from orchestrator/charts/aktis/charts/core-controller/crds/).
 # `helm uninstall` on this release cleanly removes every CR it created.
 
 enabled: true
 
 # apiVersion of the Tool/Skill/Agent/IdentityProvider CRDs. Must match what the
-# agent-controller chart's core-controller subchart installs
+# aktis chart's core-controller subchart installs
 # (config.crdGroup/crdVersion on the orchestrator side too).
 crdApiVersion: core.aktis.ai/v1alpha1
 
@@ -607,7 +607,7 @@ skills:
     enabled: false
   # self-improvement: drafts a new Skill/Tool CR from a successful fallback
   # turn (graph.ts's selectDelegate fallback) and opens a PR against
-  # imaustink/agent-controller by delegating straight to a SWE Agent CR
+  # imaustink/aktis by delegating straight to a SWE Agent CR
   # (ADR 0021 -- no Tool wrapper needed).
   selfImprovement:
     enabled: false

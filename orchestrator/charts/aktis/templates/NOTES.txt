@@ -1,5 +1,5 @@
 {{- $ao := index .Values "agent-orchestrator" -}}
-agent-controller ({{ .Chart.Version }}) has been deployed as a single release.
+Aktis ({{ .Chart.Version }}) has been deployed as a single release.
 
 Components enabled in this release:
   - orchestrator:    {{ if $ao.enabled }}yes{{ else }}no{{ end }}

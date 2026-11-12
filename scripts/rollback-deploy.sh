@@ -46,7 +46,7 @@ UPGRADE_COMMUNITY_OUTCOME="${UPGRADE_COMMUNITY_OUTCOME:-}"
 ROLLOUT_OUTCOME="${ROLLOUT_OUTCOME:-}"
 
 # GitHub context (all provided by Actions; guarded for local dry-runs).
-GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-imaustink/agent-controller}"
+GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-imaustink/aktis}"
 GITHUB_SHA="${GITHUB_SHA:-unknown}"
 GITHUB_REF_NAME="${GITHUB_REF_NAME:-unknown}"
 GITHUB_ACTOR="${GITHUB_ACTOR:-unknown}"

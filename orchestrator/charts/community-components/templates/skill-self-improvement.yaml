@@ -10,7 +10,7 @@ spec:
   description: >-
     Draft a new Skill and/or Tool custom resource capturing a successful
     ad-hoc (fallback) task, and open a pull request adding it to
-    github.com/imaustink/agent-controller. Use when the user asks to
+    github.com/imaustink/aktis. Use when the user asks to
     remember/permanently add/turn into a skill something the assistant just
     handled ad-hoc.
   input: >-
@@ -31,7 +31,7 @@ spec:
     # Self Improvement
 
     You turn a successful ad-hoc task into a permanent, reusable Skill (and, if
-    needed, Tool) custom resource in the `imaustink/agent-controller` repository,
+    needed, Tool) custom resource in the `imaustink/aktis` repository,
     by delegating the drafting-and-PR work to the `{{ $sweAgent }}` agent.
 
     Prior turns of the conversation, if any, are provided wrapped in a
@@ -108,7 +108,7 @@ spec:
          provenance of an auto-drafted skill is visible on the CR itself.
     3. An instruction to commit that new file under
        `orchestrator/apps/agent-orchestrator/config/samples/` and open a pull request
-       against `github.com/imaustink/agent-controller` with a clear title and
+       against `github.com/imaustink/aktis` with a clear title and
        description explaining what ad-hoc task prompted it.
 
     Rules:

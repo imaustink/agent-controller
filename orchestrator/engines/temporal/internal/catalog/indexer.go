@@ -14,7 +14,7 @@ import (
 // Indexer keeps in-memory mirrors of the catalog and pushes changes into the
 // vector stores. Any tool/agent change schedules a debounced re-derivation of
 // every skill's access roles, since those are intersections over refs
-// (agent-controller ADR 0011 / 0020).
+// (Aktis ADR 0011 / 0020).
 type Indexer struct {
 	stores vectorstore.Collections
 

@@ -7,7 +7,7 @@ import (
 	"github.com/qdrant/go-client/qdrant"
 )
 
-// Collections groups the three catalog stores, mirroring agent-controller's
+// Collections groups the three catalog stores, mirroring Aktis's
 // parallel Qdrant collections.
 type Collections struct {
 	Tools  Store

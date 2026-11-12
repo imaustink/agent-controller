@@ -1,8 +1,8 @@
 """
 title: Helm Values Form
 author: Bitovi
-author_url: https://github.com/imaustink/agent-controller
-funding_url: https://github.com/imaustink/agent-controller
+author_url: https://github.com/imaustink/aktis
+funding_url: https://github.com/imaustink/aktis
 version: 0.1.0
 required_open_webui_version: 0.6.0
 license: MIT

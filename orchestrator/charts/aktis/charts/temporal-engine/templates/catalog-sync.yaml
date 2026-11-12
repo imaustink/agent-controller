@@ -9,7 +9,7 @@ metadata:
     {{- include "temporal-engine.labels" . | nindent 4 }}
 ---
 # Read access to the catalog CRs, granted in the namespace where
-# agent-controller keeps them.
+# Aktis keeps them.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

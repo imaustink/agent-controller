@@ -1,6 +1,6 @@
 community-components ({{ .Chart.Version }}) has been deployed.
 
-This chart requires the agent-controller chart's CRDs (Tool/Skill/Agent/
+This chart requires the aktis chart's CRDs (Tool/Skill/Agent/
 ToolRun/AgentRun/LocalTool) to already exist in the cluster.
 
 Installed components:
