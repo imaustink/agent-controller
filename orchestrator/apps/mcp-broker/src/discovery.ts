@@ -117,6 +117,7 @@ export class Discovery {
           ...(server.spec.identityProviders && server.spec.identityProviders.length > 0
             ? { identityProviders: server.spec.identityProviders }
             : {}),
+          ...(server.spec.defaultIdentity ? { defaultIdentity: server.spec.defaultIdentity } : {}),
         },
       });
     }

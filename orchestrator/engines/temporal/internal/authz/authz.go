@@ -213,6 +213,11 @@ type Request struct {
 	AllowedIdentities []string `json:"allowedIdentities,omitempty"`
 	IdentityOverride  string   `json:"identityOverride,omitempty"`
 
+	// ToolIdentity is a Tool/MCPTool's defaultIdentity, read only by
+	// ResolveLinked: "agent" presents each resource provider's
+	// agentCredential instead of the caller's link (docs/adr/0049 step 5).
+	ToolIdentity string `json:"toolIdentity,omitempty"`
+
 	// SenderAccountID / SenderSubjectStatus are the rest of the gateway's
 	// sender claim (docs/adr/0049 §5): the immutable account id, and whether
 	// it resolved to a subject (linked | unlinked | ambiguous | unavailable).
@@ -422,6 +427,11 @@ type Deps struct {
 	// missing provider instead of a provider's own flow; see
 	// UsesConnectionsPage. Empty keeps direct links everywhere.
 	ConnectionsURL string
+
+	// AgentCredentials resolves IdentityProvider.spec.agentCredential for a
+	// tool whose defaultIdentity is agent (docs/adr/0049 step 5). Nil refuses
+	// every such tool as misconfigured.
+	AgentCredentials AgentCredentialSource
 }
 
 // Service is the pre-flight. Constructed once from deps; unreachable from any
@@ -995,7 +1005,7 @@ func (s *Service) ResolveLinked(ctx context.Context, req Request) (Verdict, erro
 	if len(req.IdentityProviders) == 0 {
 		return Verdict{Kind: KindAuthorized, Principal: s.principalOf(req)}, nil
 	}
-	if s.deps.Links == nil {
+	if s.deps.Links == nil && needsCallerLinks(req) {
 		return s.misconfigured(req, "", "no identity-link gateway is configured")
 	}
 
@@ -1006,8 +1016,15 @@ func (s *Service) ResolveLinked(ctx context.Context, req Request) (Verdict, erro
 	// GITHUB_TOKEN would expose whatever static token the Tool template
 	// carries — an operator credential, typically broader than the caller's.
 	// An agent pod has no such fallback; a tool Job may. Fail closed.
+	agentIdentity := req.ToolIdentity == ToolIdentityAgent
 	if req.ReadOnly && containsString(req.IdentityProviders, identitylink.ProviderGitHub) {
-		msg := fmt.Sprintf("%s acts on GitHub as you, which this read-only request does not allow, so I didn't run it.", req.AgentID)
+		// The same refusal in agent identity: the agentCredential is as able
+		// to write as the caller's token, and a static one usually more so.
+		who := "as you"
+		if agentIdentity {
+			who = "with the agent's own credential"
+		}
+		msg := fmt.Sprintf("%s acts on GitHub %s, which this read-only request does not allow, so I didn't run it.", req.AgentID, who)
 		logVerdict(KindRefused, req.AgentID, map[string]any{"readOnly": true})
 		return Verdict{Kind: KindRefused, Message: msg, Error: msg}, nil
 	}
@@ -1016,11 +1033,25 @@ func (s *Service) ResolveLinked(ctx context.Context, req Request) (Verdict, erro
 	credentials := map[string]string{}
 	var missing []string
 
+	var used []LaunchCredential
 	for _, provider := range req.IdentityProviders {
+		// Agent identity: a resource provider presents the operator's own
+		// credential, so the caller needs no link for it. A runtime provider
+		// (the model credential) is always the caller's, as on an Agent.
+		if agentIdentity && !RuntimeProviders[provider] {
+			cred, problem := s.agentCredential(ctx, provider)
+			if problem != "" {
+				return s.misconfigured(req, provider, problem)
+			}
+			credentials[cred.EnvVar] = cred.Value
+			used = append(used, LaunchCredential{Provider: provider, Read: "agent", Write: "agent"})
+			continue
+		}
 		envVar, supported := ProviderEnvVar[provider]
 		if !supported {
 			return s.misconfigured(req, provider, fmt.Sprintf("unsupported identity provider %q", provider))
 		}
+		used = append(used, LaunchCredential{Provider: provider, Read: "caller", Write: "caller"})
 		subject := req.Identity.Subject
 		if CrossEntryPointProviders[provider] {
 			subject = principal
@@ -1042,7 +1073,10 @@ func (s *Service) ResolveLinked(ctx context.Context, req Request) (Verdict, erro
 		}, nil
 	}
 
-	verdict := Verdict{Kind: KindAuthorized, Principal: principal}
+	verdict := Verdict{Kind: KindAuthorized, Principal: principal, Credentials: used, IdentityMode: ModeDelegated}
+	if agentIdentity {
+		verdict.IdentityMode = ModeAgent
+	}
 	if len(credentials) > 0 {
 		if s.deps.Secret == nil {
 			return s.misconfigured(req, "", "resolved credentials but no secret writer is configured")
@@ -1055,6 +1089,20 @@ func (s *Service) ResolveLinked(ctx context.Context, req Request) (Verdict, erro
 		verdict.EnvVarNames = sortedKeys(credentials)
 	}
 	return verdict, nil
+}
+
+// needsCallerLinks reports whether ResolveLinked reads any caller link: every
+// provider does, except a resource provider of an agent-identity tool.
+func needsCallerLinks(req Request) bool {
+	if req.ToolIdentity != ToolIdentityAgent {
+		return true
+	}
+	for _, p := range req.IdentityProviders {
+		if RuntimeProviders[p] {
+			return true
+		}
+	}
+	return false
 }
 
 // planProviders builds the assessment order, putting the principal-

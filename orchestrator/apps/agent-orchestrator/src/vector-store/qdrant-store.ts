@@ -43,6 +43,8 @@ interface ToolPayload {
    * resolved from this at call time.
    */
   identityProviders: string[] | null;
+  /** docs/adr/0049 step 5: a retrieved tool must keep its identity mode, or the freeze could not refuse it. */
+  defaultIdentity?: string | null;
   tier: string | null;
 }
 
@@ -97,6 +99,7 @@ export class QdrantToolStore implements VectorStore {
           agentRunTemplate: tool.agentRunTemplate ?? null,
           mcpExec: tool.mcpExec ?? null,
           identityProviders: tool.identityProviders ?? null,
+          defaultIdentity: tool.defaultIdentity ?? null,
           tier: tool.tier ?? null,
         } satisfies ToolPayload,
       })),
@@ -135,6 +138,7 @@ export class QdrantToolStore implements VectorStore {
         agentRunTemplate: payload.agentRunTemplate ?? undefined,
         mcpExec: payload.mcpExec ?? undefined,
         identityProviders: payload.identityProviders ?? undefined,
+        defaultIdentity: payload.defaultIdentity ?? undefined,
         tier: payload.tier ?? undefined,
       };
       return { tool, score: point.score };
@@ -166,6 +170,7 @@ export class QdrantToolStore implements VectorStore {
         agentRunTemplate: payload.agentRunTemplate ?? undefined,
         mcpExec: payload.mcpExec ?? undefined,
         identityProviders: payload.identityProviders ?? undefined,
+        defaultIdentity: payload.defaultIdentity ?? undefined,
         tier: payload.tier ?? undefined,
       };
       results.push({ tool, score: 1 });

@@ -29,6 +29,17 @@ export function readOnlyGitHubRefusal(toolId: string): string {
   return `${toolId} acts on GitHub as you, which this read-only request does not allow, so I didn't run it.`;
 }
 
+/**
+ * The LangGraph engine is frozen (docs/adr/0049): it implements only the
+ * caller's own credential for a tool. A Tool/MCPTool whose defaultIdentity is
+ * "agent" (step 5) is refused rather than silently run with the caller's link,
+ * so an operator never believes a mode is in force that is not.
+ */
+export function toolIdentityRefusal(tool: { id: string; defaultIdentity?: string }): string | undefined {
+  if (!tool.defaultIdentity || tool.defaultIdentity === "delegated") return undefined;
+  return `tool ${tool.id} has defaultIdentity "${tool.defaultIdentity}", which requires the Temporal engine; this engine only runs tools with the caller's own credentials`;
+}
+
 /** Outcome of dispatching one resolved Tool, reported back as a `tool_result` down-message (docs/adr/0028). */
 export type ToolCallOutcome = { ok: true; result?: unknown } | { ok: false; error: string };
 
@@ -102,6 +113,9 @@ export async function dispatchResolvedTool(
   if (opts.readOnly && tool.identityProviders?.some((p) => WRITE_CAPABLE_PROVIDERS.has(p))) {
     return { ok: false, error: readOnlyGitHubRefusal(tool.id) };
   }
+
+  const identityRefusal = toolIdentityRefusal(tool);
+  if (identityRefusal) return { ok: false, error: identityRefusal };
 
   if (tool.agentRunTemplate) {
     return {

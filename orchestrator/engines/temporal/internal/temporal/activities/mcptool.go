@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/aktisai/orchestrator/engines/temporal/internal/authz"
 	"github.com/aktisai/orchestrator/engines/temporal/internal/catalog"
 )
 
@@ -36,6 +37,10 @@ type MCPActivities struct {
 	// BrokerToken authenticates the engine to the broker (the broker's own gate,
 	// distinct from the per-user delegated token it carries onward).
 	BrokerToken string
+	// AgentCredentials resolves an IdentityProvider's agentCredential for an
+	// MCPTool whose defaultIdentity is agent (docs/adr/0049 step 5). Nil
+	// fails every such call closed.
+	AgentCredentials authz.AgentCredentialSource
 }
 
 // RunMCPToolInput carries the resolved descriptor and the planner's arguments.
@@ -77,7 +82,21 @@ func (a *MCPActivities) RunMCPTool(ctx context.Context, in RunMCPToolInput) (Run
 	// one. A server with no identityProviders is called with no delegated token
 	// (the broker's discovery identity is never spent on an invocation).
 	var delegated string
-	if len(in.Tool.IdentityProviders) > 0 {
+	if len(in.Tool.IdentityProviders) > 0 && in.Tool.DefaultIdentity == authz.ToolIdentityAgent {
+		// Agent identity: the operator's credential stands in for the
+		// caller's, resolved here for the same reason the caller's is (it
+		// never reaches event history). The broker cannot tell the
+		// difference, and does not need to: it presents what it is given.
+		token, provider, problem := a.agentToken(ctx, in.Tool.IdentityProviders)
+		if problem != "" {
+			EmitToolAuthorization(ctx, in.Tool, in.Caller, false, string(authz.KindMisconfigured), nil)
+			return RunMCPToolOutput{Result: fmt.Sprintf(
+				"I can't call %s: it is set to act as the agent, and %s.", in.Tool.ID, problem)}, nil
+		}
+		EmitToolAuthorization(ctx, in.Tool, in.Caller, false, string(authz.KindAuthorized),
+			[]authz.LaunchCredential{{Provider: provider, Read: "agent", Write: "agent"}})
+		delegated = token
+	} else if len(in.Tool.IdentityProviders) > 0 {
 		credential, err := a.Credentials.DelegatedToken(ctx, in.Caller, in.Tool.IdentityProviders)
 		if err != nil {
 			return RunMCPToolOutput{}, err
@@ -90,6 +109,11 @@ func (a *MCPActivities) RunMCPTool(ctx context.Context, in RunMCPToolInput) (Run
 						"an MCP tool call has to run as you, not as a shared credential.", exec.ServerRef),
 			}, nil
 		}
+		var used []authz.LaunchCredential
+		for _, p := range in.Tool.IdentityProviders {
+			used = append(used, authz.LaunchCredential{Provider: p, Read: "caller", Write: "caller"})
+		}
+		EmitToolAuthorization(ctx, in.Tool, in.Caller, false, string(authz.KindAuthorized), used)
 		delegated = credential.Token
 	}
 
@@ -104,6 +128,25 @@ func (a *MCPActivities) RunMCPTool(ctx context.Context, in RunMCPToolInput) (Run
 		return RunMCPToolOutput{Result: result}, nil
 	}
 	return RunMCPToolOutput{Result: result, Succeeded: true}, nil
+}
+
+// agentToken is the first of an MCPTool's providers with an agentCredential.
+// The broker presents one token per call, as it does a caller's: the first
+// configured provider is the one, matching DelegatedToken's first-linked rule.
+func (a *MCPActivities) agentToken(ctx context.Context, providers []string) (token, provider, problem string) {
+	if a.AgentCredentials == nil {
+		return "", "", "no agent-credential source is configured"
+	}
+	for _, p := range providers {
+		cred, err := a.AgentCredentials.AgentCredential(ctx, p)
+		if err != nil {
+			return "", "", err.Error()
+		}
+		if cred != nil {
+			return cred.Value, p, ""
+		}
+	}
+	return "", "", fmt.Sprintf("none of its identity providers (%s) has an agentCredential", strings.Join(providers, ", "))
 }
 
 // brokerCallRequest is the body the engine POSTs to the broker. Arguments are

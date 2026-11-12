@@ -186,7 +186,7 @@ type ToolCredentialsInput struct {
 // and two copies of credential keying was the shape of its PR #144 bug; the
 // consolidation into one owner is what removed the second copy.
 func (a *AuthorizeActivities) ResolveToolCredentials(ctx context.Context, in ToolCredentialsInput) (authz.Verdict, error) {
-	return a.Service.ResolveLinked(ctx, authz.Request{
+	v, err := a.Service.ResolveLinked(ctx, authz.Request{
 		AgentID:           in.Tool.ID,
 		IdentityProviders: in.Tool.IdentityProviders,
 		Identity: authz.Identity{
@@ -195,6 +195,37 @@ func (a *AuthorizeActivities) ResolveToolCredentials(ctx context.Context, in Too
 			Principal: in.Caller.Principal,
 			PerUser:   in.Caller.PerUser,
 		},
-		ReadOnly: in.ReadOnly,
+		ReadOnly:     in.ReadOnly,
+		ToolIdentity: in.Tool.DefaultIdentity,
 	})
+	if err != nil {
+		return v, err
+	}
+	EmitToolAuthorization(ctx, in.Tool, in.Caller, in.ReadOnly, string(v.Kind), v.Credentials)
+	return v, nil
+}
+
+// EmitToolAuthorization writes a tool call's credential decision to the audit
+// trail (docs/adr/0049 step 5). Identifiers only: provider names and whose
+// credential each used, never a value.
+func EmitToolAuthorization(ctx context.Context, tool catalog.ToolDescriptor, caller Caller, readOnly bool, outcome string, used []authz.LaunchCredential) {
+	mode := "delegated"
+	if tool.DefaultIdentity == authz.ToolIdentityAgent {
+		mode = "agent"
+	}
+	l := audit.Launch{
+		EntryPoint:   audit.EntryPoint(caller.PerUser, "", ""),
+		LaunchedBy:   caller.Subject,
+		IdentityMode: mode,
+		ReadOnly:     readOnly,
+	}
+	l.TraceID, l.Traceparent = traceOf(ctx)
+	for _, c := range used {
+		l.Credentials = append(l.Credentials, audit.Credential{Provider: c.Provider, Read: c.Read, Write: c.Write})
+	}
+	rec := audit.Record{Kind: audit.KindTool, Tool: tool.ID, Outcome: outcome, Launch: l}
+	if activity.IsActivity(ctx) {
+		rec.Conversation = activity.GetInfo(ctx).WorkflowExecution.ID
+	}
+	audit.Emit(rec)
 }

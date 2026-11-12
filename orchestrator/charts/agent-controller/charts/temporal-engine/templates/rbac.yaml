@@ -38,6 +38,13 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create", "get", "update", "patch"]
+  # An agent-identity Tool or MCPTool (docs/adr/0049 step 5) presents its
+  # providers' IdentityProvider.spec.agentCredential: the worker reads the
+  # IdentityProvider, then the Secret it names (with the `get` above), only
+  # when that Secret is labelled core.aktis.ai/agent-credential=true.
+  - apiGroups: ["core.aktis.ai"]
+    resources: ["identityproviders"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
