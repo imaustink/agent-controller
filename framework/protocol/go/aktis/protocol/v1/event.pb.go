@@ -207,7 +207,7 @@ const file_aktis_protocol_v1_event_proto_rawDesc = "" +
 	"\x04_pctB\n" +
 	"\n" +
 	"\b_messageB\a\n" +
-	"\x05_codeBZZXgithub.com/imaustink/agent-controller/framework/protocol/go/aktis/protocol/v1;protocolv1b\x06proto3"
+	"\x05_codeBOZMgithub.com/imaustink/aktis/framework/protocol/go/aktis/protocol/v1;protocolv1b\x06proto3"
 
 var (
 	file_aktis_protocol_v1_event_proto_rawDescOnce sync.Once

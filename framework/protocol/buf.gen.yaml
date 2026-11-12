@@ -18,4 +18,4 @@ plugins:
   - local: ["go", "run", "google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12"]
     out: go
     opt:
-      - module=github.com/imaustink/agent-controller/framework/protocol/go
+      - module=github.com/imaustink/aktis/framework/protocol/go

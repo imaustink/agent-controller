@@ -15,7 +15,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	protocolv1 "github.com/imaustink/agent-controller/framework/protocol/go/aktis/protocol/v1"
+	protocolv1 "github.com/imaustink/aktis/framework/protocol/go/aktis/protocol/v1"
 )
 
 const impl = "proto-go"
